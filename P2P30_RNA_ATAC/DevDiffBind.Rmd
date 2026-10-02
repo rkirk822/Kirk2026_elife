@@ -1,0 +1,247 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+
+```{r}
+library(DiffBind)
+library(stringr)
+#Load in sample matrix
+samples=read.csv("~/Documents/DevDiff/Diffbind_p2p30_good200.csv")
+blacklist<-rtracklayer::import("~/Documents/DevDiff/mm10blacklistv2.bed")
+#samples$Peaks<-str_replace_all(samples$Peaks,pattern = "500",replacement = "200")
+
+#Get Preset Peak set
+load("~/Documents/DevDiff/p2p30/p2p30PeaksSN_rawcounts.RDa",verbose = T)
+mcols(devcountGR)<-NULL
+seqlevelsStyle(devcountGR)<-"NCBI"
+PeakGR<-subsetByOverlaps(devcountGR,blacklist,invert = TRUE)
+
+
+dx<-dba(sampleSheet = samples)
+dx<-dba.blacklist(dx,blacklist=blacklist,greylist = FALSE)
+
+#dc<-dba.count(dx,summits = 100,filter = 10)
+
+dc<-dba.count(dx,peaks = PeakGR,summits=FALSE,bParallel=TRUE,filter=10)
+
+dc$merged[,1]<-dc$peaks[[1]][,1]
+testGR<-GRanges(as.data.frame(dc$merged))
+rtracklayer::export(testGR,"~/Documents/DevDiff/DiffBind_out/DBindmerge_200_filt10.bed")
+save(dc,file = "~/Documents/DevDiff/DiffBind_out/DBind_SNPeaks_filt10.RDa")
+```
+
+```{r}
+load("~/Documents/DevDiff/DiffBind_out/DBindmerge_200_filt10.RDa")
+dc_norm<-dba.normalize(dc,method = DBA_DESEQ2,library="RiP",normalize="TMM")
+
+dcx_L4<-dba.contrast(dc_norm,contrast = c("Factor","L4_P30","L4_P2"),minMembers = 2)
+dca_out_L4<-dba.analyze(dcx_L4)
+dcaGR_L4<-dba.report(dca_out_L4,fold=1,th=0.01)
+
+dcx_L6<-dba.contrast(dc_norm,contrast = c("Factor","L6_P30","L6_P2"),minMembers = 2)
+dca_out_L6<-dba.analyze(dcx_L6)
+dcaGR_L6<-dba.report(dca_out_L6,fold=1,th=0.01)
+```
+```{r}
+names(dcaGR_L4)<-dcaGR_L4$Fold
+rtracklayer::export(dcaGR_L4,"~/Documents/L4DAR_tmm.bed")
+names(dcaGR_L6)<-dcaGR_L6$Fold
+rtracklayer::export(dcaGR_L6,"~/Documents/L6DAR_tmm.bed")
+
+tst2<-bigjoin2%>%
+  mutate(K913=case_when((log2FoldChange>=1&padj<=0.05) ~ "Up 2", 
+                        (log2FoldChange<=-1&padj<=0.05) ~ "Down 2", 
+                        (log2FoldChange>=0&padj<=0.05) ~ "Up 1", 
+                        (log2FoldChange<=0&padj<=0.05) ~ "Down 1", TRUE ~ "None"),
+         K67_10=case_when((log2FoldChange_K67P10>=1&padj_K67P10<=0.05) ~ "Up 2", 
+                          (log2FoldChange_K67P10<=-1&padj_K67P10<=0.05) ~ "Down 2", 
+                          (log2FoldChange_K67P10>=0&padj_K67P10<=0.05) ~ "Up 1", 
+                          (log2FoldChange_K67P10<=0&padj_K67P10<=0.05) ~ "Down 1", TRUE ~ "None"),
+         K67_20=case_when((log2FoldChange_K67P20>=1&padj_K67P20<=0.05) ~ "Up 2", 
+                          (log2FoldChange_K67P20<=-1&padj_K67P20<=0.05) ~ "Down 2", 
+                          (log2FoldChange_K67P20>=0&padj_K67P20<=0.05) ~ "Up 1", 
+                          (log2FoldChange_K67P20<=0&padj_K67P20<=0.05) ~ "Down 1", TRUE ~ "None"))
+```
+
+
+Norm Test
+```{r}
+library(magick)
+library(profileplyr)
+
+dc_norm<-dba.normalize(dc,method = DBA_DESEQ2,library="RiP",normalize="lib")
+load("~/Documents/DevDiff/TSSwindowsforcoverage/InterPeaks.RDa")
+TSSset<-K67PeakSets$allTSS
+regions<-GRangesList(Increase=TSSset$Up,Decrease=TSSset$Down)
+
+largetest<-lapply(regionlist,function(x) dba.plotProfile(dc_norm,sites=x,merge=DBA_CONDITION,maxSites=20000))
+#names(largetest)<-names(regionlist)
+
+test<-dba.plotProfile(dc_norm,sites = interpeaks,merge=DBA_CONDITION,maxSites = 10000)
+t2<-dba.plotProfile(test,doPlot = F)
+```
+Manual plotting of plotprofile output
+```{r}
+minpeak<-
+library(tidyverse)
+
+pp_out<-t2
+
+listdata<-pp_out@assays@data@listData
+metadata<-as.data.frame(pp_out@rowRanges@elementMetadata)
+metadata<-metadata%>%dplyr::select(name,giID,Binding.Sites)
+
+tst<-sapply(listdata,function(x) apply(x,1,max))
+indx<-which(apply(tst,1,min)>minpeak)
+listdata<-lapply(listdata,function(x) x[indx,])
+
+covdata<-do.call(rbind,listdata)
+covdata<-as.data.frame(covdata)
+covdata$Sample<-rep(names(listdata),each=nrow(listdata[[1]]))
+covdata<-covdata%>%mutate(Layer=str_extract(Sample,"^L[0-9]+"),Age=str_extract(Sample,"P[0-9]+"),Rep=str_extract(Sample,"[0-9]+$"))%>%
+  mutate(Group=paste(Layer,Age,sep = "_"))
+covdataLONG<-covdata%>%rownames_to_column("giID")%>%
+  mutate(giID=str_remove(giID,pattern="\\.[0-9]+$"))%>%
+  pivot_longer(cols=starts_with("V"),
+               names_to = "position",
+               names_prefix = "V", 
+               values_to = "Coverage")
+covdataLONG<-covdataLONG%>%left_join(metadata,by='giID')
+
+
+covdataSUM<-covdataLONG%>%group_by(Age,Binding.Sites,position)%>%
+  summarise(avgcov=mean(Coverage),covsd=sd(Coverage))%>%
+  mutate(position=as.numeric(position))%>%arrange(position)
+
+out<-ggplot(covdataSUM)+geom_line(aes(x=position,y=avgcov,group=Age,col=Age))+
+  facet_wrap(~Binding.Sites)+theme_classic()+
+  scale_x_continuous(breaks=c(1,75,150),labels=c("-1.5kb","TSS","+1.5kb"))+
+  labs(x="Position",y="Normalized Coverage")+
+  theme(panel.spacing = unit(1, "lines"))
+
+
+out
+```
+```{r}
+minpeak<-10
+library(tidyverse)
+
+pp_out<-t2
+
+listdata<-pp_out@assays@data@listData
+metadata<-as.data.frame(pp_out@rowRanges@elementMetadata)
+metadata<-metadata%>%dplyr::select(name,giID,Binding.Sites)
+
+tst<-sapply(listdata,function(x) apply(x,1,max))
+indx<-which(apply(tst,1,min)>minpeak)
+listdata<-lapply(listdata,function(x) x[indx,])
+
+covdata<-do.call(rbind,listdata)
+covdata<-as.data.frame(covdata)
+covdata$Sample<-rep(names(listdata),each=nrow(listdata[[1]]))
+covdata<-covdata%>%mutate(Layer=str_extract(Sample,"^L[0-9]+"),Age=str_extract(Sample,"P[0-9]+"),Rep=str_extract(Sample,"[0-9]+$"))%>%
+  mutate(Group=paste(Layer,Age,sep = "_"))
+covdataLONG<-covdata%>%rownames_to_column("giID")%>%
+  mutate(giID=str_remove(giID,pattern="\\.[0-9]+$"))%>%
+  pivot_longer(cols=starts_with("V"),
+               names_to = "position",
+               names_prefix = "V",
+               values_to = "Coverage")
+covdataLONG<-covdataLONG%>%left_join(metadata,by='giID')
+
+
+covdataSUM<-covdataLONG%>%group_by(Age,Binding.Sites,position)%>%
+  summarise(avgcov=mean(Coverage),covn=n(),covsd=sd(Coverage))%>%
+  mutate(position=as.numeric(position))%>%arrange(Age,position)
+covdataSUM<-covdataSUM%>%mutate(margin=(qt(0.975,df=covn-1)*covsd/sqrt(covn)))
+
+out<-covdataSUM%>%filter(Binding.Sites!="None")%>%mutate(Binding.Sites=ifelse(Binding.Sites=="All","Shared Targets","Non-DEG Controls"))%>%
+           ggplot(aes(x=position,y=avgcov))+
+  geom_line(aes(col=Age),size=1)+
+  facet_wrap(~Binding.Sites,dir="h")+theme_classic()+
+  scale_x_continuous(breaks=c(1,75,150),labels=c("-1.5kb","Peak Summit","+1.5kb"))+
+  geom_ribbon(aes(ymin=avgcov-margin,ymax=avgcov+margin,fill=Age),alpha=0.5)+
+  labs(x="Position",y="Normalized Coverage")+scale_color_manual(values = c("violet","purple4"))+
+    scale_fill_manual(values = c("violet","purple4"))+
+  theme(panel.spacing = unit(2, "lines"),text = element_text(size = 15))
+
+
+out
+```
+
+
+QC tests - fragment distribution and TSS enrichment
+```{r}
+library(ATACseqQC)
+PEsets<-lapply(as.list(pebams),function(x) fragSizeDist(x,str_remove(basename(x),"_nodup.*$")))
+
+seqlevels(TxDb.Mmusculus.UCSC.mm10.ensGene)<-str_remove(seqlevels(TxDb.Mmusculus.UCSC.mm10.ensGene),"chr")
+txs<-transcripts(TxDb.Mmusculus.UCSC.mm10.ensGene)
+txsfilt<-txs[seqnames(txs)%in%standardChr]
+
+listx<-list()
+for(i in seq(pebams)){
+  bamin<-rtracklayer::import(pebams[i])
+  listx[[i]]<-TSSEscore(bamin,txsfilt,upstream=2000,downstream=2000)
+}
+names(listx)<-str_remove(basename(pebams),"_nodup.*$")
+sapply(listx,function(x) x$TSSEscore)
+```
+csaw tests
+```{r}
+pebams<-list.files("~/Documents/DevDiff/bam/",pattern = ".bam$",full.names = TRUE)
+standardChr<-as.character(c(1:19,"X","Y"))
+param<-readParam(max.frag = 1000,pe="both",discard=blacklist,restrict = standardChr)
+seqlevelsStyle(devcountGR)<-"NCBI"
+
+#Load and Count bam files using preestablished peaks
+peakcounts<-regionCounts(bam.files = pebams,regions=devcountGR,param = param)
+
+#Filter out low count regions
+peakabundance<-aveLogCPM(asDGEList(peakcounts))
+peakfilt<-peakcounts[peakabundance > -3]
+
+#TMM normalization using sliding window approach
+binned<-windowCounts(pebams,bin=TRUE,width=10000,param=param)
+workingwindow<-peakfilt
+workingwindowTMM<-normFactors(binned,se.out = workingwindow)
+
+#Loess smoothing normalization (csaw)
+workingwindowLOESS<-normOffsets(workingwindow,se.out=TRUE)
+
+#csaw sliding window peak detection (dont use)
+#counts<-windowCounts(pebams,width=300,param=param)
+#neighbor<-suppressWarnings(resize(rowRanges(counts),width=2000,fix="center"))
+#wider<-regionCounts(bam.files = pebams,regions=neighbor,param = param)
+#filterstat<-filterWindowsLocal(counts,wider)
+#countsfilt<-counts[filterstat$filter > log2(3),]
+```
+
+Filtering REads by nucleosome (obsolete - use bash script)
+```{r}
+pebams<-list.files("~/Documents/DevDiff/bam/",pattern = "bt2.bam$",full.names = T)
+
+library(GenomicAlignments)
+
+for (i in pebams){
+  print(i)
+  outfile<-paste0(str_remove(i,".nodup.*$"),"_NFR.bam")
+  #Read in bam file as paried GA
+  atacReads <- readGAlignmentPairs(i,param = ScanBamParam(mapqFilter = 1, 
+    flag = scanBamFlag(isPaired = TRUE,isProperPair = TRUE), what = c("qname","mapq", "isize")))
+  #Get insert sizes
+  atacReads_read1 <- GenomicAlignments::first(atacReads)
+  insertSizes <- abs(elementMetadata(atacReads_read1)$isize)
+  rm(atacReads_read1)
+  # Filter MT reads and nucleosomes
+  atacReads_NFR <- atacReads[insertSizes < 100, ]
+  atacReads_NFR<-atacReads_NFR[seqnames(atacReads_NFR)!="MT"]
+  #write file as bam
+  rtracklayer::export(atacReads_NFR, outfile, format = "bam")
+  rm(atacReads,atacReads_NFR)
+}
+
+
+```
+

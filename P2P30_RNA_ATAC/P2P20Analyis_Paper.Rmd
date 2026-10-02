@@ -1,0 +1,1127 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+
+```{r}
+library(DESeq2)
+library(apeglm)
+library("RColorBrewer")
+library(pheatmap)
+library(ComplexHeatmap)
+library(tidyverse)
+library(GenomicRanges)
+library(data.table)
+library(biomaRt)
+```
+
+Run first ALWAYS
+```{r}
+setwd("~/Documents/DevATAC/")
+ensembl<-useMart(host="https://may2024.archive.ensembl.org",biomart = "ENSEMBL_MART_ENSEMBL",dataset = "mmusculus_gene_ensembl")
+bmart1<-getBM(attributes = c("ensembl_gene_id", "external_gene_name","chromosome_name","gene_biotype"), mart = ensembl)
+bfilt<-bmart1%>%filter(chromosome_name%in%c(as.character(1:19),"X","Y"),gene_biotype%in%c("protein_coding"))
+```
+
+
+
+Alt input: STAR-mapped samples (mm10 or GENCODE M27)
+```{r}
+countmat<-read.csv("~/Documents/DevATAC/P2P30_RNA/p2p30_mm10_counts.csv")%>%mutate(X=make.unique(X))%>%column_to_rownames("X")
+countmat<-countmat[,c(1:4,13:16,21:28)]
+
+TPMmat<-read.csv("P2P30_RNA/p2p30_mm10_TPM_s1.csv",row.names = 1)
+#rownames(TPMmat)<-str_remove(rownames(TPMmat),pattern = "\\.[0-9]*$")
+colmat<-data.frame(Layer=ifelse(grepl(names(countmat),pattern = "L4"),"L4","L6"),
+                   Age=str_extract(names(countmat),pattern = "p[0-9]+"),row.names = names(countmat))%>%
+  mutate(Age=replace_na(Age,replace="p30"))%>%
+  mutate(Group=paste(Age,Layer,sep="_"))
+ddsTxi<-DESeqDataSetFromMatrix(countmat,
+                               colData = colmat,
+                               design = ~ Group)
+```
+
+Prefiltering for DESeq2
+```{r}
+keep<- apply(counts(ddsTxi),1,function(x) any(x>10))
+
+ddsTxi <- ddsTxi[keep,]
+
+ddsTxi<-DESeq(ddsTxi)
+rlg<-as.data.frame(assay(rlog(ddsTxi,blind = FALSE)))
+#vstdf<-as.data.frame(assay(vst(ddsTxi,blind = FALSE)))
+```
+
+
+```{r}
+tst<-plotPCA(rlog(ddsTxi,blind = FALSE),intgroup=c("Group"),ntop=1000)+theme_bw()+labs(color= "Group")
+tst$data<-tst$data%>%mutate(PC1=PC1*-1)
+out<-tst+scale_fill_manual(values=c("salmon","lightblue3","red","blue"),name="Group",labels=c("P2 Layer 4 ","P2 Layer 6","P30 Layer 4","P30 Layer 6"))+
+  theme(axis.title =element_text(size=14),legend.position = "left")+
+  geom_point(aes(fill=group),color="black",pch=21,size=6)
+
+```
+
+Get Age-related DEGs for each layer *separately  
+
+```{r}
+L4shrink<-lfcShrink(ddsTxi,contrast = c("Group","p30_L4","p2_L4"),type = "ashr")
+L6shrink<-lfcShrink(ddsTxi,contrast = c("Group","p30_L6","p2_L6"),type = "ashr")
+
+
+#p2shrink<-lfcShrink(ddsTxi,contrast = c("Group","p2_L4","p2_L6"),type = "ashr")
+#p30shrink<-lfcShrink(ddsTxi,contrast = c("Group","p30_L4","p30_L6"),type = "ashr")
+```
+
+**New and Improved way to get shared vs. all DEGs
+```{r}
+padj<-0.01
+lfc<-1
+basemean<-20
+TPMfilt<-TPMmat$external_gene_name[apply(TPMmat[,-17],1,max)>=10]
+L4df<-as.data.frame(L4shrink)[,-c(3,4)]%>%rownames_to_column("ENSID")
+L6df<-as.data.frame(L6shrink)[,-c(3,4)]%>%rownames_to_column("ENSID")
+```
+
+```{r}
+#If starting from mm10 (refseq) mapping 
+L4_6df<-left_join(L4df,L6df,by="ENSID",suffix=c("L4","L6"))
+L4_6df_filt<-L4_6df%>%filter(ENSID%in%bfilt$external_gene_name,ENSID%in%TPMfilt)
+L4<-L4df%>%filter(abs(log2FoldChange)>lfc,padj<=padj,baseMean>basemean)%>%
+  left_join(bmart1,by=c("ENSID"="external_gene_name"))%>%filter(ENSID%in%bfilt$external_gene_name)
+L6<-L6df%>%filter(abs(log2FoldChange)>=lfc,padj<=padj,baseMean>basemean)%>%
+  left_join(bmart1,by=c("ENSID"="external_gene_name"))%>%filter(ENSID%in%bfilt$external_gene_name)
+L4_6df_all<-L4_6df%>%filter((abs(log2FoldChangeL4)>=lfc&padjL4<=padj)|(abs(log2FoldChangeL6)>=lfc&padjL6<=padj),(baseMeanL4>basemean | baseMeanL6>basemean))%>%
+left_join(bmart1,by=c("ENSID"="external_gene_name"))%>%filter(ENSID%in%bfilt$external_gene_name,ENSID%in%TPMfilt)
+L4_6df_shared<-L4_6df%>%filter(abs(log2FoldChangeL4)>=lfc,padjL4<=padj,abs(log2FoldChangeL6)>=lfc,padjL6<=padj,(baseMeanL4>basemean | baseMeanL6>basemean))%>%
+  left_join(bmart1,by=c("ENSID"="external_gene_name"))%>%filter(ENSID%in%bfilt$external_gene_name)
+```
+
+ALL Genes Heatmap (uses mean expression of each sample)
+```{r}
+library(ComplexHeatmap)
+#Prefiler and summarize data
+#inmat<-as.data.frame(assay(rlg_batch_filt))
+inmat<-rlg
+#inmat<-log2(TPMmat[,-17]+1)
+
+countmat_filt<-inmat%>%rownames_to_column("ENSID")%>%filter(ENSID%in%L4_6df_all$ENSID)%>%
+  pivot_longer(-ENSID)%>%mutate(Layer=ifelse(grepl(name,pattern = "L4"),"Layer 4","Layer 6"),Age=ifelse(grepl(name,pattern="_p[2-3]_"),"P2","P30"),
+                                Group=paste(Age,Layer,sep=" "))%>%
+  group_by(Group,ENSID)%>%summarise(mean=mean(value))%>%
+  pivot_wider(names_from = Group,values_from=mean)%>%column_to_rownames("ENSID")
+
+scale_counts_filt<-apply(countmat_filt,1,FUN=function(x) (x-mean(x))/sd(x))
+```
+
+K means clustering, dendrogram tree cut method
+```{r}
+#Find optimal cluster number using Gap statistic (takes a second)
+#gapstat<-clusGap(t(scale_counts_filt2),FUNcluster = kmeans,K.max = 10,iter.max=30,nstart=100)
+#Found optimum 
+km<-6
+
+set.seed(123)
+genekm<-kmeans(t(scale_counts_filt),centers=km,iter.max=30,nstart=100)
+mat<-Heatmap(t(scale_counts_filt),
+             cluster_columns = F,clustering_method_rows = "average",clustering_distance_rows = "pearson",show_row_names = F,
+             col = colorRampPalette(c("yellow","black","magenta"))(100),name="Normalized Expression",
+             column_names_rot=45,heatmap_legend_param = list(direction="horizontal"),
+             row_split = factor(as.numeric(genekm$cluster),levels=c(1,6,2,4,5,3)),show_parent_dend_line = FALSE)
+
+#Run to see heatmap and perform clustering
+kmat<-draw(mat,heatmap_legend_side = "bottom")
+```
+
+```{r}
+#retrieve results and group genes
+klist<-row_order(kmat)
+temp<-data.frame(RowID=do.call(c,klist),Cluster=rep(names(klist),sapply(klist,length)))
+
+temp2<-as.data.frame(t(scale_counts_filt)[temp$RowID,])%>%mutate(Group=temp$Cluster)%>%rownames_to_column("ENSID")%>%
+  pivot_longer(-c(ENSID,Group),names_to = "Sample")%>%
+  group_by(Group,Sample)%>%mutate(avgexp=mean(value))
+
+temp<-temp%>%mutate(GeneID=colnames(scale_counts_filt)[temp$RowID])
+
+#Plot clusters
+plotx<-temp2%>%ggplot(aes(x=Sample,y=avgexp,col=Group,group=Group))+geom_line()+geom_line(aes(y=value,group=ENSID),alpha=0.01)+
+  stat_summary(mapping = aes(y=value),fun=mean,group=1,fun.min=function(x) mean(x)-sd(x),fun.max=function(x) mean(x)+sd(x),geom="errorbar",width=0.2)+
+  labs(x="Group", y="Normalzied Expresion")+facet_wrap(~Group,ncol=2)+theme_bw()+theme(axis.text.x = element_text(angle = 45,vjust=0.5))+
+  labs(x=NULL,col="Cluster")+scale_color_brewer(palette = "Dark2")
+```
+
+Same as above on full dataset (not averages)
+```{r}
+countmat_filt2<-inmat%>%rownames_to_column("ENSID")%>%filter(ENSID%in%intergene$external_gene_name_Klf67)%>%
+  column_to_rownames("ENSID")
+countmat_filt2<-countmat_filt2[,c(5:12,1:4,13:16)]
+names(countmat_filt2)<-paste(paste(rep(c("P2","P30"),each=8),rep(c("Layer 4","Layer 6"),each=4)),c("A","B","C","D"))
+
+
+scale_counts_filt2<-apply(countmat_filt2,1,FUN=function(x) (x-mean(x))/sd(x))
+km<-6
+
+set.seed(123)
+kmout<-kmeans(t(scale_counts_filt2),centers=6,iter.max=30,nstart=100)
+
+col<-c("lightskyblue","indianred","navy","red3")
+collabs=HeatmapAnnotation(Group=str_remove(rownames(scale_counts_filt2),pattern = ' [A-Z]+$'),
+                          col=list(Group=c("P2 Layer 4"=col[1],"P2 Layer 6"=col[2],"P30 Layer 4"=col[3],"P30 Layer 6"=col[4])), show_annotation_name=FALSE)
+mat<-Heatmap(t(scale_counts_filt2),
+             cluster_columns = F,clustering_method_rows = "average",clustering_distance_rows = "pearson",show_row_names = F,
+             col = colorRampPalette(c("magenta3","black","green3"))(100),name="Normalized Expression",
+             column_names_rot=45,heatmap_legend_param = list(direction="horizontal"),top_annotation = collabs,
+             row_split = factor(as.numeric(kmout$cluster),levels=c(2,4,5,6,1,3)),show_parent_dend_line = FALSE,show_column_names = F,border = NULL)
+
+#Run to see heatmap and perform clustering
+kmat<-draw(mat,heatmap_legend_side = "bottom")
+```
+
+GO for shared clusters
+```{r}
+library(clusterProfiler)
+library(org.Mm.eg.db)
+upshared<-names(genekm$cluster[genekm$cluster==1])
+downshared<-names(genekm$cluster[genekm$cluster==3])
+L46downshared<-L4_6df_all%>%filter(ENSID%in%downshared)
+L46upshared<-L4_6df_all%>%filter(ENSID%in%upshared)
+geneuniv<-unique(L4_6df$ENSID)
+
+GOup<- enrichGO(gene = upshared, universe = geneuniv,
+                OrgDb = org.Mm.eg.db,
+                ont = "ALL",minGSSize = 25,
+                pAdjustMethod = "BH",keyType = "SYMBOL",
+                pvalueCutoff  = 0.05, qvalueCutoff = 0.05,
+                readable = TRUE)
+GOdown<- enrichGO(gene = downshared, universe = geneuniv,
+                OrgDb = org.Mm.eg.db,
+                ont = "ALL",minGSSize = 25,
+                pAdjustMethod = "BH",keyType = "SYMBOL",
+                pvalueCutoff  = 0.05,qvalueCutoff = 0.05,
+                readable = TRUE)
+
+options(enrichplot.colours=c("red","blue"))
+GOup@result<-GOup@result[!str_detect(GOup@result$Description,"mito"),]
+#barplot(simplify(GOup,0.7),showCategory=10)+scale_y_discrete(position="right")
+#barplot(simplify(GOdown,0.7),showCategory=10)+scale_y_discrete(position="right")
+
+#get some interesting functional genes for labeling
+topgenes<-GOup@result%>%
+  filter(Description%in%c("regulation of monoatomic ion transport","neuron to neuron synapse","regulation of vesicle-mediated transport"))
+topgenes<-unique(str_split(paste(topgenes$geneID,collapse = "/"),"/")[[1]])
+
+topgenes2<-GOdown@result%>%
+  filter(Description%in%c("axon guidance","regulation of neuron projection development","regulation of nervous system development"))
+topgenes2<-unique(str_split(paste(topgenes2$geneID,collapse = "/"),"/")[[1]])
+
+topgenes<-c(topgenes,topgenes2)
+```
+
+```{r}
+simplify(GOup,0.7)@result%>%as.data.frame()%>%mutate(yq=-log10(qvalue))%>%arrange(desc(yq))%>%head(10)%>%ggplot(aes(y=yq,x=reorder(Description,yq)))+geom_col(fill="purple4",col="black")+coord_flip()+theme_classic()+labs(y=expression(-log[10](q.val)),x="")+theme(axis.text.y = element_text(size=16,face="bold"),text=element_text(size=18))+ scale_y_continuous(expand = c(0,0),limits = c(0,5))+scale_x_discrete(position = "top")
+
+simplify(GOdown,0.7)@result%>%as.data.frame()%>%mutate(yq=-log10(qvalue))%>%arrange(desc(yq))%>%head(10)%>%ggplot(aes(y=yq,x=reorder(Description,yq)))+geom_col(fill="mediumorchid",col="black")+coord_flip()+theme_classic()+labs(y=expression(-log[10](q.val)),x="")+theme(axis.text.y = element_text(size=16,face="bold"),text=element_text(size=18))+ scale_y_continuous(expand = c(0,0),limits = c(0,5))+scale_x_discrete(position = "top")
+```
+
+
+Make GRanges for overlap testing
+```{r}
+mart<-useMart(host="https://jan2020.archive.ensembl.org",biomart = "ENSEMBL_MART_ENSEMBL",dataset = "mmusculus_gene_ensembl")
+bmart2<-getBM(attributes = c("ensembl_gene_id","ensembl_transcript_id","transcript_start",
+"transcript_end","chromosome_name","strand","transcript_biotype","transcript_gencode_basic"), mart = mart)
+
+GRangefrombmart<-function(bmart,filter=TRUE){
+  bmart<-bmart%>%filter(chromosome_name%in%c(as.character(1:19),"X","Y"))
+  if(filter==TRUE){bmart<-bmart%>%filter(transcript_biotype=="protein_coding",
+                                   transcript_gencode_basic=="GENCODE basic")}
+  out<-GRanges(seqnames=paste0("chr",bmart$chromosome_name),
+          ranges=IRanges(start=bmart$transcript_start,end=bmart$transcript_end),
+          strand=ifelse(bmart$strand==1,"+","-"),
+          mcols=data.frame(ENSID=bmart$ensembl_transcript_id,GeneID=bmart$ensembl_gene_id))
+  outlist<-split(out,out$mcols.GeneID)
+  outlist<-range(outlist)
+  outplus<-unlist(outlist)
+  return(sort(outplus))
+}
+
+TSSfrombmart<-function(bmart,extend=c(100000,100000),reduce=TRUE,filter=TRUE){
+  bmart<-bmart%>%filter(chromosome_name%in%c(as.character(1:19),"X","Y"))
+    if(filter==TRUE){bmart<-bmart%>%filter(transcript_biotype=="protein_coding",
+                                   transcript_gencode_basic=="GENCODE basic")}
+  out<-GRanges(seqnames=paste0("chr",bmart$chromosome_name),
+          ranges=IRanges(start=bmart$transcript_start,end=bmart$transcript_end),
+          strand=ifelse(bmart$strand==1,"+","-"),
+          mcols=data.frame(ENSID=bmart$ensembl_transcript_id,GeneID=bmart$ensembl_gene_id))
+  outplus<-promoters(out,upstream = extend[1],downstream = extend[2])
+  if(reduce==TRUE){outlist<-split(outplus,outplus$mcols.GeneID)
+  outlist<-GenomicRanges::reduce(outlist)
+  outplus<-unlist(outlist)
+  }
+  return(sort(outplus))
+}
+
+#Get genes and TSS windows as GRanges
+ensgenes<-GRangefrombmart(bmart2)
+TSSgenes<-TSSfrombmart(bmart2,extend=c(1000,200))
+```
+
+New GRanges maker (RIP Biomart archives)
+```{r}
+library(rtracklayer)
+library(ensembldb)
+#gff<-import("Documents/Mus_musculus.GRCm38.102.gtf.gz")
+#mcols(gff[,c(12,16,19,20)])
+goodtx<-as.data.frame(mcols(gff[,c(2,12,16,19,20)]))%>%
+  filter(type=="transcript",transcript_biotype=="protein_coding",tag=="basic")
+
+#enspath<-ensembldb::ensDbFromGtf("Documents/Mus_musculus.GRCm38.102.gtf.gz")
+ensdb102<-EnsDb(enspath)
+tx <- transcripts(ensdb102, columns = c("tx_id", "gene_id"))
+#Filter out extra chromosommes
+txgood<-tx[tx@seqnames%in%c(as.character(1:19),"X","Y")]
+
+#Filter by protein-coding + GENCODE BASIC annotation
+txgood<-txgood[txgood$tx_id%in%goodtx$transcript_id]
+
+#Organize as genes
+templist<-split(txgood,txgood$gene_id)
+templist<-range(templist)
+ensgenes<-unlist(templist)
+ensgenes<-sort(txgood_plus)
+
+#Get TSS
+txgood_plus<-promoters(txgood,upstream = 1000,downstream = 200)
+templist<-split(txgood_plus,txgood_plus$gene_id)
+templist<-GenomicRanges::reduce(templist)
+TSSgenes<-unlist(templist)
+TSSgenes<-sort(TSSgenes)
+```
+
+
+```{r}
+library(ggrepel)
+volcanoooTF<-function(infile,pval=0.01,motifs=NA,allpostext=F,JASPARID=T,onlypos=F,...){
+  if(JASPARID){infile$TFID<-str_split(infile$TFID,pattern = "_",simplify = T)[,1]}
+  if(!is.na(motifs)){infile<-mutate(infile,isMotif=ifelse(grepl(TFID,pattern=motifs,ignore.case=T),T,F))
+  } else {infile<-mutate(infile,isMotif=F)}
+  if(onlypos){infile<-mutate(infile,isMotif=ifelse(padj>pval,F,isMotif))}
+  temp<-infile%>%filter(!is.nan(padj))%>%
+                          mutate(Effect=case_when(Enrichment>1 & padj<pval ~"Enriched(Test)",
+                             Enrichment<1 & padj<pval ~ "Enriched(Control)",
+                             TRUE ~ "No Change"))
+  temptab<-table(temp$Effect)
+  fig1<-temp%>%ggplot(aes(x=Enrichment,y=-log10(padj)))+geom_point(aes(col=Effect))+
+  scale_color_manual(breaks = c("Enriched(Test)","Enriched(Control)","No Change"),
+                     values=ggplot2::alpha(c("red", "blue","gray30"),0.5))+
+  geom_point(data=subset(temp,isMotif==T),shape=21,aes(x=Enrichment,y=-log10(padj),fill=Effect),
+             color="black",stroke=1.2)+
+  scale_fill_manual(breaks = c("Enriched(Test)","Enriched(Control)","No Change"),
+                     values=c("red", "blue","gray30"))+
+    geom_text_repel(data=subset(temp,isMotif==T),
+                    aes(x=Enrichment,y=-log10(padj),label=TFID),...)+
+  ylab(expression(-log[10](p.val)))+
+    xlab("Enrichment")+
+    theme_classic()+
+    geom_hline(yintercept = -log10(pval),linetype="dashed")+
+     geom_vline(xintercept = 1,linetype="dashed")+
+  theme(axis.title=element_text(size=15),axis.text = element_text(size=15),legend.position = "bottom",
+        legend.text = element_text(size=15),legend.title = element_text(size=18))+guides(fill="none")
+  if(allpostext==T){
+    fig1<- fig1 + geom_text_repel(data=subset(temp,Effect=="Enriched(Test)"),
+                                  aes(x=Enrichment,y=-log10(padj),label=TFID),...)
+  }
+  return(fig1)
+}
+
+contingency_mat<-function(col,hitmat=temp){
+  pos_test<-sum(col[hitmat])
+  neg_test<-length(col[hitmat])-pos_test
+  pos_cont<-sum(col[!hitmat])
+  neg_cont<-length(col[!hitmat])-pos_cont
+  out<-matrix(c(pos_test,neg_test,pos_cont,neg_cont),nrow=2,ncol=2,byrow=T)
+  return(out)
+}
+```
+
+
+Load Subset Peak files
+```{r}
+load("P2P30_ATAC/Sacha/p2p30Peaks_rawcounts.RDa",verbose = T)
+devpeakGR<-devcountGR
+mcols(devpeakGR)<-NULL
+```
+
+```{r}
+library(ChIPseeker)
+library(TxDb.Mmusculus.UCSC.mm10.ensGene)
+txdb<-TxDb.Mmusculus.UCSC.mm10.ensGene
+AllPeakAnno<-annotatePeak(devpeakGR,TxDb=txdb,tssRegion = c(-1000,200),flankDistance = 10000)
+
+AllPeakAnno@anno<-as.data.frame(AllPeakAnno@anno)%>%
+  mutate(fixedGene=case_when(grepl(annotation,pattern = "ENS")
+                                              ~str_extract(annotation,pattern = "ENSMUSG[0-9]*"),
+                                              TRUE ~ str_extract(geneId,pattern = "ENSMUSG[0-9]*")))%>%
+  mutate(annotation=str_split_fixed(annotation,pattern = " \\(",n = 2)[,1])%>%
+  left_join(bmart1[,-3],by=c("fixedGene"="ensembl_gene_id"))%>%GRanges()
+
+IntpeaksFULL<-AllPeakAnno@anno[AllPeakAnno@anno$annotation=="Intron"]
+
+PropeaksFULL<-AllPeakAnno@anno[AllPeakAnno@anno$annotation=="Promoter"]
+
+IGpeaksFULL<-AllPeakAnno@anno[AllPeakAnno@anno$annotation=="Distal Intergenic"]
+
+AllPeaksFULL<-AllPeakAnno@anno
+```
+
+```{r}
+peakcounts<-as.data.frame(mcols(devcountGR))
+rownames(peakcounts)<-paste(seqnames(devcountGR),start(devcountGR),sep="_")
+peakcol<-data.frame(row.names = names(peakcounts),Layer=str_extract(names(peakcounts),pattern = "^L[0-9]+"),
+                    Age=ifelse(grepl(names(peakcounts),pattern="p2"),"P2","P30"))%>%
+                    mutate(Group=paste(Age,Layer,sep="_"))
+
+ddsATAC<-DESeqDataSetFromMatrix(round(peakcounts),
+                               colData = peakcol,
+                               design = ~ Group)
+
+keep<- apply(counts(ddsATAC),1,function(x) any(x>50))
+
+ddsATAC <- ddsATAC[keep,]
+
+ddsATAC<-DESeq(ddsATAC)
+
+rlgATAC<-rlog(ddsATAC,blind = FALSE)
+#rlgATAC from ATAC
+tst<-plotPCA(rlgATAC,intgroup=c("Group"),ntop=1000)+theme_bw()+labs(color= "Group")
+tst$data<-tst$data%>%mutate(PC1=PC1*-1)
+out<-tst+ theme(aspect.ratio=0.8)+scale_fill_manual(values=c("salmon","lightblue3","red","blue"),name="Group",labels=c("P2 Layer 4 ","P2 Layer 6","P30 Layer 4","P30 Layer 6"))+
+  theme(axis.title =element_text(size=14),legend.position = "left")+
+  geom_point(aes(fill=group),color="black",pch=21,size=6)
+```
+
+
+```{r}
+library(DiffBind)
+library(stringr)
+#Load in sample matrix
+samples=read.csv("~/Documents/DevDiff/Diffbind_p2p30_good200.csv")
+blacklist<-rtracklayer::import("~/Documents/DevDiff/mm10blacklistv2.bed")
+
+#Get Preset Peak set
+load("~/Documents/DevDiff/p2p30/p2p30PeaksSN_rawcounts.RDa",verbose = T)
+mcols(devcountGR)<-NULL
+seqlevelsStyle(devcountGR)<-"NCBI"
+PeakGR<-subsetByOverlaps(devcountGR,blacklist,invert = TRUE)
+
+
+dx<-dba(sampleSheet = samples)
+dx<-dba.blacklist(dx,blacklist=blacklist,greylist = FALSE)
+
+dc<-dba.count(dx,summits = 100,filter = 10)
+
+#dc<-dba.count(dx,peaks = PeakGR,summits=FALSE,bParallel=TRUE,filter=10)
+
+dc$merged[,1]<-dc$peaks[[1]][,1]
+testGR<-GRanges(as.data.frame(dc$merged))
+#rtracklayer::export(testGR,"~/Documents/DevDiff/DiffBind_out/DBindmerge_200_filt10.bed")
+#save(dc,file = "~/Documents/DevDiff/DiffBind_out/DBindmerge_200_filt10.RDa")
+```
+
+```{r}
+load("~/Documents/DevATAC//DiffBind/DBindmerge_200_filt10.rda")
+dc_norm<-dba.normalize(dc,method = DBA_DESEQ2,library="RiP",normalize="TMM")
+allpeaks<-dba.peakset(dc_norm,bRetrieve = T)
+seqlevelsStyle(allpeaks)<-"UCSC"
+
+dcx_L4<-dba.contrast(dc_norm,contrast = c("Factor","L4_P30","L4_P2"),minMembers = 2)
+dca_out_L4<-dba.analyze(dcx_L4)
+dcaGR_L4<-dba.report(dca_out_L4,fold=1,th=0.01)
+seqlevelsStyle(dcaGR_L4)<-"UCSC"
+                                           
+dcx_L6<-dba.contrast(dc_norm,contrast = c("Factor","L6_P30","L6_P2"),minMembers = 2)
+dca_out_L6<-dba.analyze(dcx_L6)
+dcaGR_L6<-dba.report(dca_out_L6,fold=1,th=0.01)
+seqlevelsStyle(dcaGR_L6)<-"UCSC"
+
+names(mcols(dcaGR_L4))[4:6]<-paste0(names(mcols(dcaGR_L4)),"_L4")[4:6]
+names(mcols(dcaGR_L6))[4:6]<-paste0(names(mcols(dcaGR_L6)),"_L6")[4:6]
+#as.data.frame(mcols(dcaGR_L4))%>%mutate(Change=ifelse(Fold_L4>0,"Up","Down"))%>%group_by(Change)%>%summarise(n())
+#as.data.frame(mcols(dcaGR_L6))%>%mutate(Change=ifelse(Fold_L6>0,"Up","Down"))%>%group_by(Change)%>%summarise(n())
+                                        
+L46allGR<-unique(c(dcaGR_L4,dcaGR_L6))
+
+L46sharedGR<-sort(subsetByOverlaps(dcaGR_L4,dcaGR_L6,type="equal"))
+L6tempGR<-sort(subsetByOverlaps(dcaGR_L6,dcaGR_L4,type="equal"))
+mcols(L46sharedGR)<-cbind(mcols(L46sharedGR),mcols(L6tempGR)[,-1])
+
+as.data.frame(mcols(L46sharedGR))%>%mutate(L6=ifelse(Fold_L6>0,"L6 Up","L6 Down"),L4=ifelse(Fold_L4>0,"L4 Up","L4 Down"))%>%group_by(L6,L4)%>%summarise(n())
+```
+
+```{r}
+library(ChIPseeker)
+library(TxDb.Mmusculus.UCSC.mm10.ensGene)
+txdb<-TxDb.Mmusculus.UCSC.mm10.ensGene
+peaksin<-allpeaks
+mcols(peaksin)<-NULL
+AllPeakAnno<-annotatePeak(peaksin,TxDb=txdb,tssRegion = c(-1000,200),flankDistance = 10000)
+#AllPeakAnno2<-annotatePeak(L46allGR,TxDb=txdb,tssRegion = c(-1000,200),flankDistance = 10000)
+#L4Anno<-annotatePeak(dcaGR_L4,TxDb=txdb,tssRegion = c(-1000,200),flankDistance = 10000)
+#L6Anno<-annotatePeak(dcaGR_L6,TxDb=txdb,tssRegion = c(-1000,200),flankDistance = 10000)
+#SharedAnno<-annotatePeak(L46sharedGR,TxDb=txdb,tssRegion = c(-1000,200),flankDistance = 10000)
+
+
+AllPeakAnno@anno<-as.data.frame(AllPeakAnno@anno)%>%mutate(fixedGene=case_when(grepl(annotation,pattern = "ENS")
+                                              ~str_extract(annotation,pattern = "ENSMUSG[0-9]*"),
+                                              TRUE ~ str_extract(geneId,pattern = "ENSMUSG[0-9]*")))%>%
+  mutate(annotation=str_split_fixed(annotation,pattern = " \\(",n = 2)[,1])%>%
+  left_join(bmart1[,-3],by=c("fixedGene"="ensembl_gene_id"))%>%GRanges()
+
+Intpeaks<-AllPeakAnno@anno[AllPeakAnno@anno$annotation=="Intron"]
+
+Propeaks<-AllPeakAnno@anno[AllPeakAnno@anno$annotation=="Promoter"]
+
+IGpeaks<-AllPeakAnno@anno[AllPeakAnno@anno$annotation=="Distal Intergenic"]
+
+AllPeaks<-AllPeakAnno@anno
+```
+
+```{r}
+Annodf<-data.frame(f1=AllPeakAnno@annoStat[,1],All=AllPeakAnnoFULL@annoStat[,2],DAR=AllPeakAnno2@annoStat[,2],L4=L4Anno@annoStat[,2],L6=L6Anno@annoStat[,2],Shared=SharedAnno@annoStat[,2])%>%
+  mutate(Feature=case_when(str_detect(f1,"Intron") ~ "Intron", str_detect(f1,"Downstream|Distal") ~ "Intergenic", 
+                            str_detect(f1,"Promoter") ~ "Promoter", TRUE ~ "Exon"))%>%
+  dplyr::select(-f1)%>%pivot_longer(-Feature)%>%
+  group_by(name,Feature)%>%summarise(Total=sum(value))%>%
+  mutate(Feature=factor(Feature,levels=c("Promoter","Intron","Intergenic","Exon")))
+
+statplot<- Annodf%>%ggplot(aes(fill=Feature,x=name,y=Total))+geom_bar(position="stack",stat="identity")+labs(x="Group",y="% Peaks",fill="Genomic Feature")+scale_fill_brewer(palette = "Set1")+theme_minimal()+
+  theme(axis.text = element_text(size=12),axis.title = element_text(size=15),legend.position = "bottom")
+
+```
+
+```{r}
+peaksin<-devpeakGR
+load("~/Documents/DevATAC/p2p30PeaksSN_JASPAR2022CORE_FIMO.rda")
+#load("~/Documents/DevATAC/p2p30PeaksSN_JASPAR2022root_FIMO.rda")
+testout<-sapply(listy,function(x) countOverlaps(peaksin,x))
+mcols(peaksin)<-testout
+```
+
+```{r}
+peaksinPro<-sort(Propeaks)
+testout<-sapply(listy,function(x) countOverlaps(peaksinPro,x))
+testout[testout>0]<-1
+mcols(peaksinPro)<-testout
+peaksinPro$fixedGene<-sort(Propeaks)$fixedGene
+
+dcaPro_P2P30<-subsetByOverlaps(dcaGR_P2P30,Propeaks,type="equal")
+
+mcols(peaksinPro)<-cbind(mcols(sort(dcaPro_P2P30)),mcols(peaksinPro))
+
+peaksinProdf<-as.data.frame(peaksinPro)
+
+DEGset<-filter(K67df10_filt,log2FoldChange<=-1,padj<=0.05)
+
+peaksinProdf%>%mutate(DEG=ifelse(fixedGene%in%DEGset$ENSID,T,F))%>%ggplot(aes(x=Fold,col=DEG))+stat_ecdf()
+peaksinProdf%>%mutate(DEG=ifelse(fixedGene%in%DEGset$ENSID,T,F))%>%ggplot(aes(x=Fold,col=DEG))+geom_density()
+```
+
+
+```{r}
+downshared<-names(genekm$cluster[genekm$cluster==3])
+upshared<-names(genekm$cluster[genekm$cluster==1])
+
+geneset<-upshared
+#For Misc. Regulatory Regions
+BGset<-PropeaksFULL
+
+#ovtest<-findOverlaps(BGset,peaksin,minoverlap = 100)
+ovtest<-findOverlaps(BGset,peaksin,type = "equal")
+BGmotifs<-peaksin[ovtest@to]
+BGmotifs$geneID<-BGset$external_gene_name[ovtest@from]
+
+#136 for clutser, 837 for all
+testout_plus<-mcols(BGmotifs[,-837])
+
+listx<-list()
+for(i in seq(ncol(testout_plus))){
+  listx[[i]]<-testout_plus[,i]>0
+}
+
+temp<-BGmotifs$geneID%in%geneset
+
+
+#Chitest_pos<-data.frame(Enrichment=sapply(contabs,FUN=function(x) (x[1,1]/sum(x[1,]))/(x[2,1]/sum(x[2,]))))%>%
+#  mutate(TFID=names(contabs),Pval=sapply(contabs,FUN=function(x) chisq.test(x)$p.value))%>%
+#  mutate(padj=p.adjust(Pval,"BH"))
+
+contabs<-lapply(listx,FUN=contingency_mat)
+names(contabs)<-names(listy)
+
+Fishtest<-lapply(contabs,FUN=function(x) fisher.test(x))
+Fishtest_pos<-data.frame(Enrichment=sapply(Fishtest,function(x) x$estimate),
+                         Pval=sapply(Fishtest,function(x) x$p.value))%>%
+                           mutate(TFID=names(contabs),padj=p.adjust(Pval,method="BH"))
+
+volcanoooTF(Fishtest_pos,motifs="Klf|Sox|Sp",onlypos = T)
+volcanoooTF(Fishtest_pos,motifs="Cre|Tcf|fos|Jun",onlypos = T)
+#volcanoooTF(Fishtest_pos,JASPARID = F,allpostext = T)
+```
+
+
+```{r}
+DARAnno<-subsetByOverlaps(AllPeaks,L46allGR,type="equal")
+
+IntDAR<-subsetByOverlaps(Intpeaks,L46allGR,type="equal")
+
+ProDAR<-subsetByOverlaps(Propeaks,L46allGR,type="equal")
+
+IGDAR<-subsetByOverlaps(IGpeaks,L46allGR,type="equal")
+```
+
+```{r}
+dc_norm2<-dba.normalize(dc,method = DBA_DESEQ2,library="RiP",normalize="lib")
+allpeaks<-dba.peakset(dc_norm2,bRetrieve = T)
+seqlevelsStyle(allpeaks)<-"UCSC"
+
+inmat<-as.data.frame(mcols(subsetByOverlaps(allpeaks,ProDAR,type="equal")))
+
+countmat_filt<-inmat%>%rownames_to_column("PeakID")%>%
+    pivot_longer(-PeakID)%>%mutate(Layer=ifelse(grepl(name,pattern = "L4"),"Layer 4","Layer 6"),Age=ifelse(grepl(name,pattern="p2"),"P2","P30"),
+                                  Group=paste(Age,Layer,sep=" "))%>%
+    group_by(Group,PeakID)%>%summarise(mean=mean(value))%>%
+    pivot_wider(names_from = Group,values_from=mean)%>%column_to_rownames("PeakID")
+
+
+
+scale_counts_filt<-apply(log2(countmat_filt+0.1),1,FUN=function(x) (x-mean(x))/sd(x))
+
+#gapstat<-clusGap(t(scale_counts_filt),FUNcluster = kmeans,K.max = 10,iter.max=30,nstart=100)
+#km<-5 #for Introns
+km<-2 #For PRomoters
+#km<-6 #For IG
+set.seed(404)
+kmout<-kmeans(t(scale_counts_filt),centers=km,iter.max=30,nstart=100)
+
+mat<-Heatmap(t(scale_counts_filt),
+             cluster_columns = F,clustering_method_rows = "average",clustering_distance_rows = "pearson",show_row_names = F,
+             col = colorRampPalette(c("blue2","white","red2"))(50),name="Normalized Expression",
+             column_names_rot=45,heatmap_legend_param = list(direction="horizontal"),
+             row_split = factor(as.numeric(kmout$cluster)),show_parent_dend_line = FALSE)
+#levels=c(5,4,2,1,3) for intron ordering
+
+#levels = c(4,2,1,3,6,5) for IG ordering
+
+#Run to see heatmap and perform clustering
+kmat<-draw(mat,heatmap_legend_side = "bottom")
+```
+
+
+```{r}
+#retrieve results and group genes
+klist<-row_order(kmat)
+temp<-data.frame(RowID=do.call(c,klist),Cluster=rep(names(klist),sapply(klist,length)))
+
+temp2<-as.data.frame(t(scale_counts_filt)[temp$RowID,])%>%mutate(Group=temp$Cluster)%>%rownames_to_column("ENSID")%>%
+  pivot_longer(-c(ENSID,Group),names_to = "Sample")%>%
+  group_by(Group,Sample)%>%mutate(avgexp=mean(value))
+
+temp<-temp%>%mutate(PekeID=colnames(scale_counts_filt)[temp$RowID])
+
+#Plot clusters
+plotx<-temp2%>%ggplot(aes(x=Sample,y=avgexp,col=Group,group=Group))+geom_line()+geom_line(aes(y=value,group=ENSID),alpha=0.01)+
+  stat_summary(mapping = aes(y=value),fun=mean,group=1,fun.min=function(x) mean(x)-sd(x),fun.max=function(x) mean(x)+sd(x),geom="errorbar",width=0.2)+
+  labs(x="Group", y="Normalzied Expresion")+facet_wrap(~Group,ncol = 1)+theme_bw()+theme(axis.text.x = element_text(angle = 45,vjust=0.5))+
+  labs(x=NULL,col="Cluster")+scale_color_brewer(palette = "Set1")
+```
+
+
+```{r}
+library(TxDb.Mmusculus.UCSC.mm10.ensGene)
+library(GenomicFeatures)
+bfilt2<-getBM(attributes = c("ensembl_gene_id","ensembl_transcript_id","ucsc","external_gene_name","entrezgene_id","chromosome_name","transcript_biotype","transcript_gencode_basic"), mart = mart)
+bfilt2<-bfilt2%>%filter(chromosome_name%in%c(as.character(1:19),"X","Y"),transcript_biotype%in%c("protein_coding"),transcript_gencode_basic=="GENCODE basic")
+
+ensPromo<-promoters(TxDb.Mmusculus.UCSC.mm10.ensGene,upstream=2000,downstream=2000)
+ensPromo_down<-ensPromo[ensPromo$tx_name%in%bfilt2$ensembl_transcript_id[bfilt2$ensembl_gene_id%in%L46downshared$ensembl_gene_id]]
+ensPromo_up<-ensPromo[ensPromo$tx_name%in%bfilt2$ensembl_transcript_id[bfilt2$ensembl_gene_id%in%L46upshared$ensembl_gene_id]]
+ensPromo_none<-ensPromo[ensPromo$tx_name%in%bfilt2$ensembl_transcript_id[bfilt2$ensembl_gene_id%in%cntset$ensembl_gene_id]]
+
+TSSlarge<-TSSfrombmart(bmart2,extend = c(2000,2000),reduce=F)
+RKPromo_down<-TSSlarge[TSSlarge$mcols.GeneID%in%L46downshared$ensembl_gene_id]
+RKPromo_up<-TSSlarge[TSSlarge$mcols.GeneID%in%L46upshared$ensembl_gene_id]
+RKPromo_none<-TSSlarge[TSSlarge$mcols.GeneID%in%cntset$ensembl_gene_id]
+```
+
+Get Regions overlapping peaks containing KLF motifs
+```{r}
+#load("~/Documents/DevATAC/p2p30PeaksSN_JASPAR2022CORE_FIMO.rda")
+load("~/Documents/DevATAC/p2p30PeaksSN_JASPAR2022root_FIMO.rda")
+
+peaksin2<-Propeaks
+testout2<-sapply(listy,function(x) countOverlaps(peaksin2,x))
+mcols(peaksin2)<-testout2
+#KLFPromo<-peaksin2[peaksin2$KLF5_MA0599.1>0]
+KLFPromo<-peaksin2[peaksin2$cluster_27>0]
+CntPromo<-subsetByOverlaps(peaksin2,ProDAR,type="equal",invert = TRUE)
+CntPromo<-subsetByOverlaps(CntPromo,KLFPromo,type="equal",invert=TRUE)
+
+KLFPromo<-resize(KLFPromo,fix="center",width = 4000)
+CntPromo<-resize(CntPromo,fix="center",width = 4000)
+
+peaksin2<-allpeaks
+testout2<-sapply(listy,function(x) countOverlaps(peaksin2,x))
+mcols(peaksin2)<-testout2
+#KLFAll<-peaksin2[peaksin2$KLF5_MA0599.1>0]
+KLFAll<-peaksin2[peaksin2$cluster_27>0]
+CntAll<-subsetByOverlaps(peaksin2,DARAnno,type="equal",invert = TRUE)
+CntAll<-subsetByOverlaps(CntAll,KLFAll,type="equal",invert=TRUE)
+
+KLFAll<-resize(KLFAll,fix="center",width = 4000)
+CntAll<-resize(CntAll,fix="center",width = 4000)
+```
+
+Get top TSS Peaks (most likely DARs)
+```{r}
+TSSlarge<-TSSfrombmart(bmart2,extend = c(2000,2000),reduce=FALSE)
+TSSnarrow<-TSSfrombmart(bmart2,extend=c(300,200),reduce = FALSE)
+#Top Shared DEGs
+testset<-rbind(L46downshared,L46upshared)
+TSSset<-TSSnarrow[TSSnarrow$mcols.GeneID%in%testset$ensembl_gene_id]
+
+#For KLF targets!
+testset<-intergene%>%filter(ENSID%in%interbm$ensembl_gene_id[interbm$clustn%in%c(2,3)])
+TSSset<-TSSnarrow[TSSnarrow$mcols.GeneID%in%testset$ENSID]
+
+chk<-findOverlaps(TSSset,devcountGR)
+TSSsub<-devcountGR[chk@to]
+TSSsub$GeneID<-TSSset$mcols.GeneID[chk@from]
+TSSsub$TxID<-TSSset$mcols.ENSID[chk@from]
+
+
+#Find peaks overlapping TSS window with hightest coverage 
+TSSsplit<-split(TSSsub,TSSsub$GeneID)
+topTSS<-sapply(TSSsplit,FUN=function(x) x[which.max(apply(mcols(x)[,-c(9:10)],1,sum))])
+topTSS<-unlist(GRangesList(topTSS))
+
+topTSS$Change<-ifelse(topTSS$GeneID%in%L46upshared$ensembl_gene_id,"Up","Down")
+topTSS<-split(topTSS,topTSS$Change)
+
+#Unchanging Genes, Norm tests
+cntset<-filter(L4_6df_filt,ENSID%in%names(sort(apply(rlg,1,var))[1:1000]))%>%filter(baseMeanL4>500)%>%
+  left_join(bmart1[,1:2],by=c("ENSID"="external_gene_name"))
+TSSset<-TSSnarrow[TSSnarrow$mcols.GeneID%in%cntset$ensembl_gene_id]
+
+chk<-findOverlaps(TSSset,devcountGR)
+TSSsub<-devcountGR[chk@to]
+TSSsub$GeneID<-TSSset$mcols.GeneID[chk@from]
+TSSsub$TxID<-TSSset$mcols.ENSID[chk@from]
+
+#Find peaks overlapping TSS window with hightest coverage 
+TSSsplit<-split(TSSsub,TSSsub$GeneID)
+topTSS2<-sapply(TSSsplit,FUN=function(x) x[which.max(apply(mcols(x)[,-c(9:10)],1,sum))])
+topTSS2<-unlist(GRangesList(topTSS2))
+topTSS2$Change<-"None"
+
+topTSS$None<-topTSS2
+
+TSSout<-lapply(topTSS,function(x) ensPromo[ensPromo$tx_name%in%x$TxID])
+#TSSout<-lapply(topTSS,function(x) TSSlarge[TSSlarge$mcols.ENSID%in%x$TxID])
+```
+
+Get Peaks around DEGs for coverage plots
+```{r}
+peaksets<-GRangesList(
+ProDown=Propeaks[Propeaks$fixedGene%in%L46downshared$ensembl_gene_id],
+ProUp=Propeaks[Propeaks$fixedGene%in%L46upshared$ensembl_gene_id],
+ProCnt=Propeaks[Propeaks$fixedGene%in%cntset$ensembl_gene_id],
+IntDown=Intpeaks[Intpeaks$fixedGene%in%L46downshared$ensembl_gene_id],
+IntUp=Intpeaks[Intpeaks$fixedGene%in%L46upshared$ensembl_gene_id],
+IntCnt=Intpeaks[Intpeaks$fixedGene%in%cntset$ensembl_gene_id],
+IGDown=IGpeaks[IGpeaks$fixedGene%in%L46downshared$ensembl_gene_id],
+IGUp=IGpeaks[IGpeaks$fixedGene%in%L46upshared$ensembl_gene_id],
+IGCnt=IGpeaks[IGpeaks$fixedGene%in%cntset$ensembl_gene_id],
+AllDown=AllPeaks[AllPeaks$fixedGene%in%L46downshared$ensembl_gene_id],
+AllUp=AllPeaks[AllPeaks$fixedGene%in%L46upshared$ensembl_gene_id],
+AllCnt=AllPeaks[AllPeaks$fixedGene%in%cntset$ensembl_gene_id])
+
+peaksets<-resize(peaksets,fix="center",width = 4000)
+
+peaksetsFULL<-GRangesList(
+ProDown=PropeaksFULL[PropeaksFULL$fixedGene%in%L46downshared$ensembl_gene_id],
+ProUp=PropeaksFULL[PropeaksFULL$fixedGene%in%L46upshared$ensembl_gene_id],
+ProCnt=PropeaksFULL[PropeaksFULL$fixedGene%in%L46upshared$ensembl_gene_id],
+IntDown=IntpeaksFULL[IntpeaksFULL$fixedGene%in%L46downshared$ensembl_gene_id],
+IntUp=IntpeaksFULL[IntpeaksFULL$fixedGene%in%L46upshared$ensembl_gene_id],
+IntCnt=IntpeaksFULL[IntpeaksFULL$fixedGene%in%cntset$ensembl_gene_id],
+IGDown=IGpeaksFULL[IGpeaksFULL$fixedGene%in%L46downshared$ensembl_gene_id],
+IGUp=IGpeaksFULL[IGpeaksFULL$fixedGene%in%L46upshared$ensembl_gene_id],
+IGCnt=IGpeaksFULL[IGpeaksFULL$fixedGene%in%cntset$ensembl_gene_id],
+AllDown=AllPeaksFULL[AllPeaksFULL$fixedGene%in%L46downshared$ensembl_gene_id],
+AllUp=AllPeaksFULL[AllPeaksFULL$fixedGene%in%L46upshared$ensembl_gene_id],
+AllCnt=AllPeaksFULL[AllPeaksFULL$fixedGene%in%cntset$ensembl_gene_id])
+
+peaksetsFULL<-resize(peaksetsFULL,fix="center",width = 4000)
+```
+
+```{r}
+#Promoters:
+#Up Shared: Cluster 1; Down Shared: Cluster 2
+
+#Introns:
+#Up Shared: Cluster 1; Down Shared: 4 + 5
+
+#Intragenic:
+#Up Shared: Cluster 1; Down Shared: Cluster 3
+
+upsharedpeak<-AllPeaks[as.numeric(names(kmout$cluster[kmout$cluster==1]))]
+downsharedpeak<-AllPeaks[as.numeric(names(kmout$cluster[kmout$cluster==2]))]
+
+uppeaknames<-unique(upsharedpeak$external_gene_name)
+downpeaknames<-unique(downsharedpeak$external_gene_name)
+geneuniv<-unique(L4_6df$ENSID)
+
+GOup<- enrichGO(gene = uppeaknames, universe = geneuniv,
+                OrgDb = org.Mm.eg.db,
+                ont = "ALL",minGSSize = 25,
+                pAdjustMethod = "BH",keyType = "SYMBOL",
+                pvalueCutoff  = 0.05, qvalueCutoff = 0.05,
+                readable = TRUE)
+GOdown2<- enrichGO(gene = downpeaknames, universe = geneuniv2,
+                OrgDb = org.Mm.eg.db,
+                ont = "ALL",minGSSize = 25,
+                pAdjustMethod = "BH",keyType = "SYMBOL",
+                pvalueCutoff  = 0.05,qvalueCutoff = 0.05,
+                readable = TRUE)
+
+barplot(simplify(GOdown2,0.5),showCategory=10)+scale_y_discrete(position="right")
+
+simplify(GOdown2,0.9)@result%>%as.data.frame()%>%mutate(yq=-log10(qvalue))%>%arrange(desc(yq))%>%head(10)%>%ggplot(aes(y=yq,x=reorder(Description,yq)))+geom_col(fill="mediumorchid",col="black")+coord_flip()+theme_classic()+labs(y=expression(-log[10](q.val)),x="")+theme(axis.text.y = element_text(size=16,face="bold"),text=element_text(size=18))+ scale_y_continuous(expand = c(0,0),limits = c(0,5))+scale_x_discrete(position = "top")
+```
+
+```{r}
+#For Misc. Regulatory Regions
+Regset<-PropeaksFULL
+#Regset<-subsetByOverlaps(Regset, upsharedpeak,invert = T,minoverlap = 100)
+
+ovtest<-findOverlaps(Regset,peaksin,type = "equal")
+Regmotifs<-peaksin[ovtest@to]
+Regmotifs$geneID<-Regset$fixedGene[ovtest@from]
+
+#136 for clutser, 837 for all
+testout_plus<-mcols(Regmotifs)[,-837]
+
+listx<-list()
+for(i in seq(ncol(testout_plus))){
+  listx[[i]]<-testout_plus[,i]>0
+}
+
+
+temp<-overlapsAny(Regmotifs,downsharedpeak,minoverlap = 100)
+contabs<-lapply(listx,FUN=contingency_mat)
+names(contabs)<-names(listy)
+
+Chitest_pos<-data.frame(Enrichment=sapply(contabs,FUN=function(x) (x[1,1]/sum(x[1,]))/(x[2,1]/sum(x[2,]))))%>%
+  mutate(TFID=names(contabs),Pval=sapply(contabs,FUN=function(x) chisq.test(x)$p.value))%>%
+  mutate(padj=p.adjust(Pval,"BH"))
+
+Fishtest<-lapply(contabs,FUN=function(x) fisher.test(x))
+Fishtest_pos<-data.frame(Enrichment=sapply(Fishtest,function(x) x$estimate),
+                         Pval=sapply(Fishtest,function(x) x$p.value))%>%
+                           mutate(TFID=names(contabs),padj=p.adjust(Pval,method="BH"))
+
+volcanoooTF(Fishtest_pos,allpostext = T)
+```
+
+'Peaks first' Approach - measure DEGs associated with peaks in each category
+```{r}
+testkm<-genekm
+peakkm<-kmout
+DEGelig<-L4_6df_filt$ENSID
+Peakset<-Propeaks
+PeakDAR<-ProDAR
+
+outdf<-data.frame()
+for (i1 in c(1,seq(unique(peakkm$cluster))+1)){
+  ix<-max(peakkm$cluster)
+  if (i1==ix+1){peakset<-subsetByOverlaps(Peakset,PeakDAR,type="equal",invert = TRUE)$external_gene_name
+  } else {
+    peakset<-AllPeaks[as.numeric(names(which(peakkm$cluster==i1)))]$external_gene_name
+  }
+  n1<-length(peakset)
+  n2<-sum(peakset%in%DEGelig)
+  peakset_reduce<-unique(peakset)
+  n3<-length(peakset_reduce)
+  n4<-sum(peakset_reduce%in%DEGelig)
+  tempdf<-data.frame(nPeaks=n1,nEligPeaks=n2,nUniPeaks=n3,nEligUniPeaks=n4)
+  rm(n1,n2,n3,n4)
+  for (i2 in seq(unique(testkm$cluster))) {
+    geneset<-names(which(testkm$cluster==i2))
+    n5<-sum(peakset%in%geneset)
+    n6<-sum(peakset_reduce%in%geneset)
+    id1<-paste0("nCluster_",as.character(i2))
+    id2<-paste0("nUniCluster_",as.character(i2))
+    tempdf[[id1]]<-n5
+    tempdf[[id2]]<-n6
+    rm(n5,n6,id1,id2)
+  }
+  outdf<-rbind(outdf,tempdf)
+}
+
+rownames(outdf)<-c(paste("Cluster",seq(unique(peakkm$cluster)),sep = "_"),"Unchanged_Peaks")
+
+contabPeak<-function(dfout,onlyeligible=TRUE,mode=c("All","Binary")){
+  if(onlyeligible){
+    dfout<-dfout%>%dplyr::select(-c(nPeaks,nUniPeaks))
+  } else {
+    dfout<-dfout%>%dplyr::select(-c(nEligPeaks,nEligUniPeaks))
+  }
+  if(mode=="All"){
+  dfout%>%dplyr::select(-contains("Uni"))%>%
+    mutate(nNeggenes=.[,1]-apply(.[,-1],1,sum))%>%
+      dplyr::select(-1)
+  } else if(mode=="Binary"){
+    dfout%>%dplyr::select(contains("Uni"))%>%
+    mutate(nNeggenes=.[,1]-apply(.[,-1],1,sum))%>%
+      dplyr::select(-1)
+  }
+}
+
+temp<-contabPeak(outdf,mode="All")
+names(temp)<-c("Shared Up","L6 Up","Shared Down","L6 Down","L4 Down","L4 Up","Not DEG")
+temp<-temp[,c(1,3,7,5,6,2,4)]
+chitemp<-chisq.test(temp)
+corrplot(chitemp$residuals[,1:3],is.corr = F,method="color")
+```
+
+'Genes first' approach - how many DARs associated with genes in each category 
+```{r}
+library(chisq.posthoc.test)
+library(corrplot)
+#km67$cluster[km67$cluster==3]<-2
+testkm<-km913_67
+peakset<-Propeaks
+peakkm<-kmout
+#bgset<-L4_6df_filt%>%filter(!ENSID%in%names(testkm$cluster))
+bgset<-K67df_10%>%filter(!external_gene_name%in%names(testkm$cluster))
+
+outdf<-data.frame()
+for (i1 in c(1,seq(unique(testkm$cluster))+1)){
+  print(i1);
+  if (i1==4){geneset<-bgset$external_gene_name} else {geneset<-names(which(testkm$cluster==i1))};
+  n1<-length(geneset)
+  n2<-sum(geneset%in%peakset$external_gene_name)
+  n3<-sum(peakset$external_gene_name%in%geneset)
+  tempdf<-data.frame(nGenes=n1,nGeneswPeaks=n2,nPeaks=n3)
+  rm(n1,n2,n3)
+  for (i2 in seq(unique(peakkm$cluster))) {
+    testset<-AllPeaks[as.numeric(names(which(peakkm$cluster==i2)))]$external_gene_name
+    n4<-sum(geneset%in%testset)
+    n5<-sum(testset%in%geneset)
+    id1<-paste0("nGenesCluster",as.character(i2))
+    id2<-paste0("nPeaksCluster",as.character(i2))
+    tempdf[[id1]]<-n4
+    tempdf[[id2]]<-n5
+    rm(n4,n5,id1,id2)
+  }
+  outdf<-rbind(outdf,tempdf)
+}
+rownames(outdf)<-c("Shared Up","L6 Up","Shared Down","L6 Down","L4 Down","L4 Up","Not DEG")
+outdf<-outdf[c(1,3,7,5,6,2,4),]
+
+rownames(outdf)<-c("Downregulated","Upregulated","Not DEG")
+#rownames(outdf)<-c("Upregulated","Downregulated","Not DEG")
+#rownames(outdf)<-c("Upregulated","Downregulated 1","Downregulated 2","Not DEG")
+                   
+contabGene<-function(dfout,level=c("Genes","Peaks")){
+  if(level=="Genes"){
+  dfout%>%dplyr::select(-nGenes)%>%
+   dplyr::select(contains("Genes"))%>%
+    mutate(nGenes_Neg=nGeneswPeaks-apply(.[,-1],1,sum))%>%
+      dplyr::select(-nGeneswPeaks)
+  } else if(level=="Peaks"){
+    dfout%>%dplyr::select(-c(nGenes,nGeneswPeaks))%>%
+    dplyr::select(contains("Peaks"))%>%
+    mutate(nGenes_Neg=nPeaks-apply(.[,-1],1,sum))%>%
+      dplyr::select(-nPeaks)
+  }
+}
+
+temp<-contabGene(outdf,level="Peaks")
+chitemp<-chisq.test(temp)
+corrplot(chitemp$stdres[1:3,],is.corr = F,method="color",cl.cex=1.5,cl.align.text = 'l')
+chisq.posthoc.test(temp)
+#c(1,5,6,3,2,4,7)
+
+names(temp)<-c("Gained","Lost","No Change")
+temp[1:4,]%>%rownames_to_column('Cluster')%>%pivot_longer(cols=-Cluster)%>%mutate(Cluster=factor(Cluster,levels=c("Upregulated","Downregulated","Not DEG")))%>%ggplot(aes(x=Cluster,y=value,fill=name))+geom_bar(position="fill",stat="identity",col="black")+xlab("")+labs(fill="Promoter Accesibility Change")+scale_fill_manual(values = c("red","blue","grey70"))+theme_bw()+theme(axis.text=element_text(size = 15),axis.text.x=element_text(angle = 45,vjust =.6),axis.title = element_text(size=15),legend.position = "right")
+```
+
+```{r}
+dcaGR_L6full<-dba.report(dca_out_L6,th=1)
+seqlevelsStyle(dcaGR_L6full)<-"UCSC"
+L6Pro<-subsetByOverlaps(dcaGR_L6full,Propeaks,type="equal")
+L6Pro$ENSID<-Propeaks$fixedGene[subjectHits(findOverlaps(L6Pro,Propeaks,type="equal"))]
+L6Pro$PeakReg=case_when(overlapsAny(L6Pro,dcaGR_L6[dcaGR_L6$Fold_L6>=1],type="equal") ~ "Gained",
+                        overlapsAny(L6Pro,dcaGR_L6[dcaGR_L4$Fold_L6<=-1],type="equal") ~ "Lost",
+                        TRUE ~ "No Change")
+
+L6Pro$PeakReg=case_when(L6Pro$Fold>=1&L6Pro$FDR<=0.01 ~ "Gained",
+                        L6Pro$Fold<=1&L6Pro$FDR<=0.01 ~ "Lost",
+                        TRUE ~ "No Change")
+
+dcaGR_L4full<-dba.report(dca_out_L4,th=1)
+seqlevelsStyle(dcaGR_L4full)<-"UCSC"
+L4Pro<-subsetByOverlaps(dcaGR_L4full,Propeaks,type="equal")
+L4Pro$ENSID<-Propeaks$fixedGene[subjectHits(findOverlaps(L4Pro,Propeaks,type="equal"))]
+L4Pro$PeakReg=case_when(overlapsAny(L4Pro,dcaGR_L4[dcaGR_L4$Fold_L4>=1],type="equal") ~ "Gained",
+                        overlapsAny(L4Pro,dcaGR_L4[dcaGR_L4$Fold_L4<=-1],type="equal") ~ "Lost",
+                        TRUE ~ "No Change")
+
+L4Pro$PeakReg=case_when(L4Pro$Fold>=1&L4Pro$FDR<=0.01 ~ "Gained",
+                        L4Pro$Fold<=1&L4Pro$FDR<=0.01 ~ "Lost",
+                        TRUE ~ "No Change")
+
+L4Comp<-L4df%>%mutate(GeneReg=case_when(log2FoldChange>=1&padj<=0.01 ~ "Upregulated", 
+                                        log2FoldChange<=-1&padj<=0.01 ~ "Downregulated", 
+                                        TRUE ~ "No Change"))%>%
+  left_join(bmart1,by=c("ENSID"="external_gene_name"))%>%inner_join(as.data.frame(mcols(L4Pro)),by=c("ensembl_gene_id"="ENSID"))%>%
+  dplyr::select(-starts_with('Conc'))%>%mutate(CellType="L4")
+
+L6Comp<-L6df%>%mutate(GeneReg=case_when(log2FoldChange>=1&padj<=0.01 ~ "Upregulated", 
+                                        log2FoldChange<=-1&padj<=0.01 ~ "Downregulated", 
+                                        TRUE ~ "No Change"))%>%
+  left_join(bmart1,by=c("ENSID"="external_gene_name"))%>%inner_join(as.data.frame(mcols(L6Pro)),by=c("ensembl_gene_id"="ENSID"))%>%
+  dplyr::select(-starts_with('Conc'))%>%mutate(CellType="L6")
+
+L46Comp<-rbind(L4Comp,L6Comp)%>%filter(!(GeneReg=="No Change"&PeakReg=="No Change"))
+
+out<-L46Comp%>%ggplot(aes(x=log2FoldChange,y=Fold,shape=CellType))+
+  geom_point(data=subset(L46Comp,GeneReg=="No Change"),color="grey70",alpha=0.25)+
+  geom_pointdensity(data=subset(L46Comp,GeneReg=="Upregulated"),adjust=1)+
+  scale_color_gradient(low = "indianred2",high = "darkred")+
+  new_scale_color()+geom_pointdensity(data=subset(L46Comp,GeneReg=="Downregulated"),adjust=1)+
+  scale_color_gradient(low="steelblue1",high="darkblue")+new_scale_color()+
+    stat_smooth(aes(col=CellType),method=lm,fullrange = T,se = F)+
+  stat_cor(aes(col=CellType,label = ..r.label..),label.x=-10,size=5)+
+  scale_color_manual(values = c("purple","purple4"))+
+       geom_hline(yintercept = c(-1,1),linetype="dashed")+geom_vline(xintercept = c(-1,1),linetype="dashed")+theme_bw()+
+       labs(x="log2FoldChange(P2 v P30, RNA)",y="log2FoldChange(P2 v P30, ATAC)",shape="Cell Type")
+```
+
+
+```{r}
+library(ggnewscale)
+library(ggpointdensity)
+
+#Compare P2 v P30 RNA-seq data with P2 v P30 ATAC-seq data
+dcx_P2P30<-dba.contrast(dc_norm,contrast = c("Condition","P30","P2"),minMembers = 4)
+dca_out_P2P30<-dba.analyze(dcx_P2P30)
+dcaGR_P2P30<-dba.report(dca_out_P2P30,th=1)
+seqlevelsStyle(dcaGR_P2P30)<-"UCSC"
+P2P30Pro<-subsetByOverlaps(dcaGR_P2P30,Propeaks,type="equal")
+P2P30Pro$ENSID<-Propeaks$fixedGene[subjectHits(findOverlaps(P2P30Pro,Propeaks,type="equal"))]
+P2P30Pro$PeakReg=case_when(overlapsAny(P2P30Pro,upsharedpeak,type="equal") ~ "Gained", 
+                           overlapsAny(P2P30Pro,downsharedpeak,type="equal") ~ "Lost",
+                           TRUE ~ "No Change")
+
+#(Devdf created in Figureplots.Rmd)
+DevComp<-Devdf%>%inner_join(as.data.frame(mcols(P2P30Pro)),by=c("ensembl_gene_id"="ENSID"))%>%
+  filter(ENSID%in%L4_6df_filt$ENSID)%>%mutate(GeneReg=case_when(ensembl_gene_id%in%L46upshared$ensembl_gene_id ~ "Upregulated",
+                                                                ensembl_gene_id%in%L46downshared$ensembl_gene_id ~ "Downregulated", 
+                                                                TRUE ~ "No Change"))%>%
+  filter(!(GeneReg=="No Change"&PeakReg=="No Change"))%>%
+  mutate(GenePeak=case_when(GeneReg=="Upregulated"&PeakReg=="Gained" ~ T,
+                                                                 GeneReg=="Downregulated"&PeakReg=="Lost" ~ T,
+                                                                 TRUE ~ F))%>%
+  mutate(labid=ifelse(ENSID%in%topgenes,ENSID,""))
+
+outplot<-DevComp%>%ggplot(aes(x=log2FoldChange,y=Fold,col=GeneReg,alpha=PeakReg))+geom_point()+
+     scale_alpha_manual(values =c(1,0.5,0.1))+scale_color_manual(values=c("blue","grey70","red"))+
+       geom_hline(yintercept = c(-1,1),linetype="dashed")+geom_vline(xintercept = c(-1,1),linetype="dashed")+theme_bw()+
+       labs(x="log2FoldChange(P2 v P30, RNA)",y="log2FoldChange(P2 v P30, ATAC)",col="Gene Expression Change", alpha="Promoter Accesibility Change")+
+       theme(text  = element_text(size=13),legend.position = "bottom")+
+       geom_point(data=subset(DevComp,GenePeak==T),color="black",shape=21,alpha=1)+
+  geom_text_repel(data=subset(DevComp,GenePeak==T),aes(label=ENSID),max.overlaps = 20)
+
+outplot2<-DevComp%>%ggplot(aes(x=log2FoldChange,y=Fold))+
+  geom_point(data=subset(DevComp,GeneReg=="No Change"),color="grey70",alpha=0.5)+
+  geom_pointdensity(data=subset(DevComp,GeneReg=="Upregulated"),adjust=1)+
+  scale_color_gradient(low = "indianred2",high = "darkred")+
+  new_scale_color()+geom_pointdensity(data=subset(DevComp,GeneReg=="Downregulated"),adjust=1)+
+  scale_color_gradient(low="steelblue1",high="darkblue")+
+       geom_hline(yintercept = c(-1,1),linetype="dashed")+geom_vline(xintercept = c(-1,1),linetype="dashed")+theme_bw()+
+       labs(x="log2FoldChange(P2 v P30, RNA)",y="log2FoldChange(P2 v P30, ATAC)")+
+  new_scale_color()+
+  geom_text_repel(data=subset(DevComp,labid!=""),aes(label=labid,col=GeneReg),max.overlaps = 30,box.padding = 0.5)+
+  scale_color_manual(values=c("blue","red"))
+
+outplot2+stat_smooth(col="grey25",method=lm,fullrange = T)+
+  stat_cor(label.x=-15,label.y=5,size=5)
+
+#For compairng with Klf9/13 data
+K913Comp<-K913df_old%>%inner_join(as.data.frame(mcols(P2P30Pro)),by="ENSID")%>%
+  mutate(GeneReg=case_when(ENSID%in%filter(K913df_filtold,log2FoldChange>=1)$ENSID ~ "Upregulated",
+                                                                ENSID%in%filter(K913df_filtold,log2FoldChange<=-1)$ENSID ~ "Downregulated", 
+                                                                TRUE ~ "No Change"))%>%
+  filter(!(GeneReg=="No Change"&PeakReg=="No Change"))%>%
+  mutate(GenePeak=case_when(GeneReg=="Upregulated"&PeakReg=="Lost" ~ T,
+                                                                 GeneReg=="Downregulated"&PeakReg=="Gained" ~ T,
+                                                                 TRUE ~ F))%>%
+  filter(!external_gene_name%in%c("Klf9","Klf13"))%>%
+  mutate(labid=ifelse(external_gene_name%in%KLFbestgenes,external_gene_name,""))
+
+outplot<-K913Comp%>%
+  ggplot(aes(x=log2FoldChange,y=Fold))+geom_point(aes(col=GeneReg,alpha=GeneReg))+
+     scale_alpha_manual(values =c(1,0.25,1))+scale_color_manual(values=c("blue","grey70","red"))+
+       geom_hline(yintercept = c(-1,1),linetype="dashed")+geom_vline(xintercept = c(-1,1),linetype="dashed")+theme_bw()+
+       labs(x="log2FoldChange(Klf9/13 v Scr., RNA)",y="log2FoldChange(P2 v P30, ATAC)",
+            col="Gene Expression Change", alpha="Promoter Accesibility Change")+
+  theme(text  = element_text(size=13),legend.position = "bottom")+
+  geom_text_repel(aes(label=labid,col=GeneReg),max.overlaps = 30,box.padding = 0.5,col="tomato4")+
+    theme(axis.title =element_text(size=14),axis.text =element_text(size=13))
+
+outplot+stat_smooth(col="grey25",method=lm,fullrange = T)+stat_cor(label.x=-4.5,label.y=5,size=5)
+
+#For compairng with Klf6/7 data
+K67comp<-K67df_10%>%inner_join(as.data.frame(mcols(P2P30Pro)),by="ENSID")%>%
+  mutate(GeneReg=case_when(ENSID%in%filter(K67df10_filt,log2FoldChange>=1)$ENSID ~ "Upregulated",
+                                                                ENSID%in%filter(K67df10_filt,log2FoldChange<=-1)$ENSID ~ "Downregulated", 
+                                                                TRUE ~ "No Change"))%>%
+  filter(!(GeneReg=="No Change"&PeakReg=="No Change"))%>%
+  mutate(GenePeak=case_when(GeneReg=="Upregulated"&PeakReg=="Gained" ~ T,
+                                                                 GeneReg=="Downregulated"&PeakReg=="Lost" ~ T,
+                                                                 TRUE ~ F))%>%
+  filter(!external_gene_name%in%c("Klf6","Klf7"))%>%
+  mutate(labid=ifelse(external_gene_name%in%KLFbestgenes&GeneReg=="Downregulated",external_gene_name,""))
+
+outplot<-K67comp%>%
+  ggplot(aes(x=log2FoldChange,y=Fold))+geom_point(aes(col=GeneReg,alpha=GeneReg))+
+     scale_alpha_manual(values =c(1,0.25,1))+scale_color_manual(values=c("blue","grey70","red"))+
+       geom_hline(yintercept = c(-1,1),linetype="dashed")+geom_vline(xintercept = c(-1,1),linetype="dashed")+theme_bw()+
+       labs(x="log2FoldChange(Klf6/7 v Scr., RNA)",y="log2FoldChange(P2 v P30, ATAC)",
+            col="Gene Expression Change", alpha="Promoter Accesibility Change")+
+  theme(text  = element_text(size=13),legend.position = "bottom")+
+  geom_text_repel(aes(label=labid,col=GeneReg),max.overlaps = 30,box.padding = 0.5,col="blue4")+
+    theme(axis.title =element_text(size=14),axis.text =element_text(size=13))
+
+outplot+stat_smooth(col="grey25",method=lm,fullrange = T)+stat_cor(label.x=-4.5,label.y=5,size=5)
+```
+
+```{r}
+ovhits<-findOverlaps(Propeaks,dcaGR_P2P30)
+Propeaks$Fold<-dcaGR_P2P30$Fold[subjectHits(ovhits)]
+
+temp<-data.frame(Target="Klf9/13",GeneID=filter(K913df_filt,log2FoldChange>=1)$ENSID)
+temp<-rbind(temp,data.frame(Target="Klf6/7",GeneID=filter(K67df10_filt,log2FoldChange<=-1)$ENSID))
+temp<-rbind(temp,data.frame(Target="Shared",GeneID=filter(intergene,log2FoldChange_Klf913>=1)$ENSID))
+temp2<-data.frame(Target="Non-DEG",GeneID=filter(K67df_10,!ENSID%in%temp$GeneID)$ENSID)
+temp<-rbind(temp,temp2[sample(seq(nrow(temp2)),2000),])
+
+Profold<-temp%>%left_join(as.data.frame(mcols(Propeaks)),by=c("GeneID"="fixedGene"))%>%filter(!is.na(Fold))%>%
+  mutate(Target=factor(Target,levels=c("Non-DEG","Klf9/13","Klf6/7","Shared")))
+out<-Profold%>%ggplot(aes(x=Target,y=Fold,fill=Target))+geom_violin(draw_quantiles = c(0.25,0.5,0.75),scale="width")+
+  scale_fill_manual(values = c("blue4","firebrick3","springgreen3","purple4"))+theme_classic()+
+  labs(y=expression('Promoter log'[2]*'Fold Change'))+theme(axis.text= element_text(size=15),axis.title.y= element_text(size=15),legend.position = "none")
+```
+
