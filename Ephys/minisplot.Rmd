@@ -1,0 +1,95 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+
+```{r}
+library(data.table)
+library(tidyverse)
+#run for each file, then concatenate testdf files
+pathIn<-"~/Documents/EPhysTransfer/MiniExperiment2023/Rfx3GFP_minis//"
+resultsdir<-as.list(dir(pathIn,pattern = "results_2023-02",include.dirs = T,recursive = T,full.names = T))
+minisum<-function(indir){
+  sumdir<-list.files(indir,pattern = "filtSumG.txt",full.names = T)
+  temp<-fread(sumdir)
+  temp$CellID<-str_extract(indir,"Cell_?[0-9]*")
+  return(temp)
+}
+test<-lapply(resultsdir,minisum)
+testdf<-do.call(rbind,test)
+
+testdf$Virus<-"Rfx3"
+testdf$Virus<-"Klf9/13"
+testdf$Virus<-"Scramble"
+
+df_all<-rbind(testdf,testdf2)
+sum_all<-df_all%>%group_by(Virus,CellID,trl)%>%summarise(MeanAmp=mean(amp),MeanFreq=n()/9,Meantau=mean(dkTau/1000000))%>%
+  summarise(MA=mean(MeanAmp),MF=mean(MeanFreq),MT=mean(Meantau))
+names(sum_all)[3:5]<-c("Amplitude (pA)","Frequency (Hz)","Decay Time")
+
+
+scggood<-c(160,161,162,163,174,178,181,182,183,186,187,188,191,220,222)
+scgpgood<-c(scggood,221,223,180,171,172)
+rfxgood<-c(197,199,201,203,205,206,209,210,212,215,217,218,219)
+rfxpgood<-c(rfxgood,216,211,207,208,204)
+klfgood<-c(229,230,232,233,236,237,238,241,244,245,246,247)
+klfpgood<-c(klfgood,228,231,234,235,240,242,248,250)
+
+#Plot mini Amp and Freq (together)
+sum_some<-dplyr::filter(sum_all,grepl(CellID,pattern=paste(as.character(c(rfxgood,scggood)),collapse = "|")))
+
+outplot<-pivot_longer(sum_some,cols=3:4)%>%group_by(Virus,name)%>%
+  mutate(mean=mean(value),sem=(sd(value)/sqrt(n())))%>%
+  ggplot()+geom_col(aes(x=Virus,y=mean,fill=Virus),position="dodge")+
+  facet_wrap( ~ name)+geom_point(aes(x=Virus,y=value),position=position_dodge(width=0.9))+
+  geom_errorbar(aes(x=Virus,ymin=mean-sem,ymax=mean+sem),position = position_dodge(0.9),width=0.2)+
+  scale_fill_brewer(palette="Set1")+ylab("Condition Average")+theme(legend.position = "bottom")+theme_classic()
+
+outplot+theme(axis.text=element_text(size=15),axis.title =element_text(size=15))+labs(x="gRNA Target",y="Cell Average",fill="gRNA Target")+scale_y_continuous(expand = c(0,0),limits = c(0,17))
+```
+
+```{r}
+pathIn<-"~/Documents/EPhysTransfer/MiniExperiment2023/Rfx3GFP_minis/"
+resultsdir<-as.list(dir(pathIn,pattern = "results_2023-06",include.dirs = T,recursive = T,full.names = T))
+minisum<-function(indir){
+  sumdir<-list.files(indir,pattern = "filtSumG.txt",full.names = T)
+  temp<-fread(sumdir)
+  temp$CellID<-str_extract(indir,"Cell_?[0-9]*")
+  return(temp)
+}
+test<-lapply(resultsdir,minisum)
+testdf<-do.call(rbind,test)
+testdf$Virus<-"Rfx3-GFP"; r3df<-testdf
+#testdf$Virus<-"Klf9/13-mCherry"; k913df<-testdf
+#testdf$Virus<-"Scr-GFP"; scrdf<-testdf
+
+df_all<-rbind(r3df,scrdf)
+
+df_all$ISI <- (df_all$pkLoc - shift(df_all$pkLoc, fill=0, type="lag"))/10
+df_all$ISI[df_all$ISI<0]<-df_all$pkLoc[df_all$ISI<0]/10
+
+scggood<-c(160,161,162,163,174,178,181,182,183,186,187,188,191,220,222)
+scgpgood<-c(scggood,221,223,180,171,172)
+rfxgood<-c(197,199,201,203,205,206,209,210,212,215,217,218,219)
+rfxpgood<-c(rfxgood,216,211,207,208,204)
+klfgood<-c(229,230,232,233,236,237,238,241)
+klfpgood<-c(klfgood,228,231,234,235,240,242)
+
+df_some<-dplyr::filter(df_all,grepl(CellID,pattern=paste(as.character(c(klfgood,scggood)),collapse = "|")))
+
+temp<-split(df_some,df_some$CellID)
+n<-min(sapply(temp,nrow))
+temp<-lapply(temp, FUN=function(x) x[sample(seq(nrow(x)), size=n),])
+df_sub<-do.call(rbind,temp)
+
+amplot<-ggplot(df_sub,aes(x=pkAmp))+stat_ecdf(aes(color=Virus))+xlim(c(0,50))+
+   scale_color_brewer(palette="Set1")+ylab("Cumulative Probability")+xlab("Amplitude (pA)")+
+  theme_classic()
+
+
+
+isiplot<-ggplot(df_sub,aes(x=ISI))+stat_ecdf(aes(color=Virus))+xlim(c(0,3000))+
+   scale_color_brewer(palette="Set1")+ylab("Cumulative Probability")+xlab("ISI (ms)")+
+  theme_classic()
+```
+
