@@ -1,0 +1,1111 @@
+---
+title: "Figure Code"
+output: html_notebook
+---
+
+```{r}
+library(DESeq2)
+library(tidyverse)
+library(data.table)
+library(biomaRt)
+library(limma)
+library(ggrepel)
+ensembl <- useEnsembl(biomart = "genes", dataset = "mmusculus_gene_ensembl")
+bmart1<-getBM(attributes = c("ensembl_gene_id",
+                               "external_gene_name","chromosome_name","gene_biotype"), mart = ensembl)
+bfilt<-bmart1%>%filter(chromosome_name%in%c(as.character(1:19),"X","Y"),gene_biotype%in%c("protein_coding"))
+```
+
+Developmental ATAC-seq Motif enrichment Plots
+```{r}
+
+```
+
+
+Layer/Age KLF plot
+```{r}
+quickTPM_line<-function(TPMmat,Genes=NULL,Pattern=NULL,wrap=FALSE,logscale=F,lwd=1,L4s1=TRUE){
+  if (is.null(Genes)&&is.null(Pattern)){
+    stop("Please Select at Least 1 Gene")
+  }
+  if(!any(names(TPMmat)=="external_gene_name")){names(TPMmat)[which(grepl(names(TPMmat),pattern="gene",ignore.case = T))]="external_gene_name"}
+  if (!is.null(Genes)&&is.null(Pattern)){
+    TPMmut <-TPMmat%>%filter(external_gene_name%in%Genes)
+  }
+  if (is.null(Genes)&&!is.null(Pattern)){
+    TPMmut<-TPMmat%>%filter(grepl(external_gene_name,pattern=Pattern,ignore.case = T))
+  }
+    if(L4s1){TPMmut<-TPMmut%>%dplyr::select(matches("p2|p30|L6|gene"))}else{TPMmut<-TPMmut%>%dplyr::select(-matches("p7|p30|p3"))}
+    TPMmut<-TPMmut%>%pivot_longer(-external_gene_name)%>%
+      mutate(CellType=str_extract(name,pattern = "L[4-6]+"),Age=ifelse(grepl(name,pattern = "p2"),"p2","p30"))%>%
+      mutate(Age=factor(Age,levels = c("p2","p30")))
+    if(logscale){TPMmut<-TPMmut%>%mutate(value=log2(value+1))}
+    TPMmut<-TPMmut%>%
+      group_by(CellType,Age,external_gene_name)%>%mutate(Groupmean=mean(value),Groupsd=sd(value))
+    TPMplot<-TPMmut %>% ggplot(aes(x=Age,y=Groupmean,group=interaction(CellType,external_gene_name),col=external_gene_name,linetype=CellType))+
+      geom_line(lwd=lwd)+geom_errorbar(lwd=lwd,aes(ymin=Groupmean-Groupsd,ymax=Groupmean+Groupsd),width=0.05)+
+      ylab("Normalized Expression (TPM)")+xlab("Age")+labs(linetype="Cell Type",col="Gene")+scale_x_discrete(expand=c(0.1,0.1))+
+      theme_classic()
+    if(wrap){TPMplot=TPMplot+facet_wrap(. ~ external_gene_name, scales="free")}
+    if(logscale){TPMplot<-TPMplot+labs(y="Normalized Counts (log2TPM)")}
+    return(TPMplot)
+}
+
+L46_TPM<-read.csv("~/Documents/Counts/p2p30/p2p30_mm10_TPM.csv")
+
+plotout<-quickTPM_line(L46_TPM,Genes=c("Klf9","Klf7","Klf13","Klf6"),L4s1 = T)+
+  scale_color_manual(values=c("chartreuse3","chartreuse4","tomato","red3"),breaks=c("Klf6","Klf7","Klf13","Klf9"))+
+  facet_grid(~factor(external_gene_name,levels=c("Klf6","Klf7","Klf13","Klf9")))+
+  theme(text = element_text(size = 18),strip.background = element_blank())+
+  scale_linetype_discrete(name="Cell Type",labels =  c("Layer IV (Rorb+)","Layer VI (56L)"))
+```
+
+
+L4 p2/7/30 Klf plot
+```{r}
+quickTPML4<-function(TPMmat,Genes=NULL,Pattern=NULL,wrap=FALSE,LinePlot=FALSE,logscale=F){
+  if (is.null(Genes)&&is.null(Pattern)){
+    stop("Please Select at Least 1 Gene")
+  }
+  if (!is.null(Genes)&&is.null(Pattern)){
+    TPMmut <-TPMmat%>%filter(external_gene_name%in%Genes)
+  }
+  if (is.null(Genes)&&!is.null(Pattern)){
+    TPMmut<-TPMmat%>%filter(grepl(external_gene_name,pattern=Pattern,ignore.case = T))
+  }
+    TPMmut<-TPMmut%>%pivot_longer(-external_gene_name)%>%
+      mutate(Age=str_extract(name,pattern="p[0-9]+"))%>%
+      mutate(Age=fct_relevel(Age,"p2","p7","p30"))
+    if(logscale){TPMmut<-TPMmut%>%mutate(value=log2(value+1))}
+    TPMmut<-TPMmut%>%mutate(Group=Age)%>%
+      group_by(Group,external_gene_name)%>%mutate(Groupmean=mean(value),Groupsd=sd(value))
+  if (LinePlot==F) {
+      TPMplot<-TPMmut %>% ggplot(aes(x=external_gene_name,y = Groupmean,fill=Group)) + geom_col(col="black",position="dodge") +
+      geom_point(position=position_dodge(width=0.9))+
+      geom_errorbar(aes(ymin=Groupmean-Groupsd,ymax=Groupmean+Groupsd,x=external_gene_name),position =position_dodge(width=0.9),width=0.2) +
+      ylab("Normalized Expression")+xlab("Gene")+theme_classic()+theme(legend.position = "bottom")+
+        theme(axis.text.x = element_text(angle = 45,size = 12,vjust=0.5))
+    } else if(LinePlot==T){
+        TPMplot<-TPMmut%>%ggplot(aes(x=Group,y=Groupmean,group=external_gene_name,color=external_gene_name))+
+    geom_line(linewidth=1)+
+    geom_errorbar(aes(ymin=Groupmean-Groupsd,ymax=Groupmean+Groupsd),width=0.2)+
+    labs(y="Normalized Expression (TPM)",x="Age",col="Gene")+
+    theme_classic()
+    }
+    if(wrap){TPMplot<-TPMplot+facet_wrap(~external_gene_name,scales="free")}
+    if(logscale){TPMplot<-TPMplot+labs(y="Normalized Expression (log2TPM)")}
+    return(TPMplot)
+}
+
+L4TPM<-read.csv("~/Documents/Counts/p2p30/p2p30_L4_RefGenes.csv",row.names = 1)
+
+outplot<-quickTPML4(L4TPM,Genes=c("Klf9","Klf7","Klf13","Klf6"),LinePlot = TRUE)+
+  scale_color_manual(values=c("chartreuse3","chartreuse4","tomato","red3"),breaks=c("Klf6","Klf7","Klf13","Klf9"))+
+  theme(text = element_text(size = 18),strip.background = element_blank())
+```
+
+
+Arlotta paper development plot
+```{r}
+quickplotArlotta<-function(TPMmat,Genes=NULL,Pattern=NULL){
+    if (is.null(Genes)&&is.null(Pattern)){
+    stop("Please Select at Least 1 Gene")
+  }
+  if (!is.null(Genes)&&is.null(Pattern)){
+    TPMmut <-TPMmat%>%filter(GeneName%in%Genes)
+  }
+  if (is.null(Genes)&&!is.null(Pattern)){
+    TPMmut<-TPMmat%>%filter(grepl(GeneName,pattern=Pattern,ignore.case = T))
+  }
+  TPMmut%>%pivot_longer(cols = -GeneName)%>%mutate(celltype=str_extract(name,"Tle4|Cux2"),Age=str_split_fixed(name,"_",n=2)[,1])%>%
+    group_by(GeneName,celltype,Age)%>%
+    mutate(mean=mean(value),Age=factor(Age,levels = c("E18","P1","P3","P7","P21","P48")))%>%
+    ggplot(aes(x=Age,y=mean))+
+    geom_line(aes(group=interaction(celltype,GeneName),col=GeneName,linetype=celltype),linewidth=1.2)+
+    geom_point(aes(y=value,col=GeneName))+
+    labs(y="Normalized Counts (FPKM)",x="Age",col="Gene")+
+    theme_classic()
+}
+
+ArlottaTPM<-read.csv("~/Documents/Counts/Arlotta_devFPKM.csv",row.names = 1)
+
+plot1<-quickplotArlotta(ArlottaTPM,Genes=c("Klf9","Klf7"))+scale_linetype(name="Cell type")+
+  theme(text =element_text(size=18),legend.position = "right",legend.text = element_text(size=12),legend.title = element_text(size=16))+
+  scale_color_manual(values=c("chartreuse4","red3"))+
+    scale_linetype_discrete(name="Cell Type",labels =  c("Layer II/III (Cux2+)","Layer VI (Tle4+)"))
+```
+
+Layer conservation plot
+```{r}
+GeneCounts<-read.csv("~/Documents/ATACseq_Project/FinalCounts/InternalRNA_logCPM_byGene_batchcor.csv",row.names = 1)
+bmart1<-read.csv("~/Documents/ATACseq_Project/RegressionStuff/ENS_info2020.csv",row.names = 1)
+
+PeakNames<-"_L[1-6]+_"
+
+GeneCountsfilt=GeneCounts%>%dplyr::select(matches(PeakNames))%>%
+  dplyr::select(-matches("_p[1-9]_"))
+
+Cellavg<-GeneCountsfilt%>%rownames_to_column("X")%>%gather("Sample","Expression",-X)%>%
+  mutate(CellType=str_split_fixed(Sample,pattern = "_combo|_[0-9]$",n=2)[,1])%>%
+  mutate(CellType=str_split_fixed(CellType,pattern = "_",n=2)[,2])%>%
+  group_by(CellType,X)%>%
+  dplyr::summarize(avg=mean(Expression))%>%spread(CellType,avg)%>%
+  left_join(bmart1,by=c("X"="ensembl_gene_id"))%>%dplyr::select(-X)
+
+names(Cellavg)[1:6]<-c("Layer 2/3","Layer 4","Layer 5","Layer 5 (2)","Layer 6","Layer 6 (2)")
+  
+Klfs<-Cellavg%>%filter(grepl(external_gene_name,pattern="^Klf[0-9]+"))%>%column_to_rownames("external_gene_name")
+
+out<-pheatmap(Klfs,cluster_cols = F,border_color = NA,angle_col = 315,fontsize_col = 12,fontsize_row = 12,clustering_method = "ward.D")
+
+
+```
+
+CRISPRi test plot
+```{r}
+x<-read.csv("~/Documents/CRISPRi/qPCR/CRISPRi_summary.csv")
+names(x)<-c("FC","Target","Group","Sample","Plate")
+x<-x%>%dplyr::mutate(Group=ifelse(Group=="GFP","Scramble gRNA AAV","Triple KD AAV"))%>%dplyr::group_by(Group,Target)%>%dplyr::mutate(fcmean=mean(FC))%>%arrange(Target,Group)
+n<-length(unique(x$Sample))
+n2<-length(unique(x$Target))
+x$controlmean<-rep(x$fcmean[seq(1,n*3,n)],each=n)
+x<-x%>%dplyr::mutate(fcnorm=FC/controlmean)%>%dplyr::mutate(normmean=mean(fcnorm),fcsd=sd(fcnorm))
+out<-ggplot(x)+geom_col(aes(x=Target,y=normmean,fill=Group),col="black",position="dodge")+
+  geom_point(aes(x=Target,y=FC,fill=Group),position = position_dodge(width=0.9),show.legend = F)+
+  geom_errorbar(aes(ymin=normmean-fcsd,ymax=normmean+fcsd,x=Target,fill=Group),position =position_dodge(width=0.9),width=0.2)+
+  scale_y_continuous(expand=c(0,0),limit=c(0,ceiling(max(x$FC))))+theme_classic()+
+  scale_fill_brewer(palette = "Set1")+
+  labs(x="Measured Gene",y="Relative mRNA Levels",fill="gRNA Target")+theme(legend.position = "bottom")+geom_hline(yintercept = 1,linetype="dashed")+
+  theme(text=element_text(size=16),legend.position = "right",legend.text = element_text(size=12))
+```
+
+KLF qPCR Plot
+```{r}
+KLF<-read.csv("~/Documents/CRISPRi/qPCR/KLF9_13_913_mCherry.csv")
+#KLF<-gather(KLF, "Target", "FC", KLF13, KLF9)
+KLF$Group[KLF$Group=="ScrR"]="Scramble gRNA"
+KLF<-KLF%>%group_by(Target,Group)%>%mutate(fcmean=mean(FC))%>%arrange(Target,desc(Group))%>%
+  mutate(Group=factor(Group,levels = c("Scramble gRNA","Klf13","Klf9","Klf9/13")))
+n<-length(unique(KLF$Sample))
+KLF$controlmean<-c(rep(KLF$fcmean[1],n),rep(KLF$fcmean[n+1],n))
+KLF<-KLF%>%mutate(fcnorm=FC/controlmean)%>%mutate(normmean=mean(fcnorm),fcsd=sd(fcnorm))
+y<-ggplot(KLF)+geom_col(aes(x=Target,y=normmean,fill=Group),col="black",position="dodge")+geom_point(aes(x=Target,y=FC,fill=Group),position = position_dodge(width=0.9),show.legend = F)+
+  geom_errorbar(aes(ymin=normmean-fcsd,ymax=normmean+fcsd,x=Target,fill=Group),position = position_dodge(width=0.9),width=0.2)+scale_y_continuous(expand=c(0,0),limit=c(0,4))+theme_classic()+
+  labs(x="Measured Gene",y="Relative mRNA Levels",fill="gRNA Target")+
+  theme(legend.position = "right",text=element_text(size=16))+geom_hline(yintercept = 1,linetype="dashed")+
+  scale_fill_manual(values=c("blue4","sandybrown","salmon2","firebrick2"))
+```
+All CRISPRi summary
+```{r}
+infile<-fread("~/Documents/CRISPRi/qPCR/CRSIsummary.csv")
+tempfile<-infile%>%dplyr::select(Target,SampID,KD)%>%
+  group_by(Target)%>%mutate(KD=KD*100)%>%mutate(kdmean=mean(KD),kdsd=sd(KD))
+
+y<-ggplot(tempfile,aes(x=Target,y=kdmean,fill=Target))+geom_bar(stat="summary",position="dodge",color="black",linewidth=0.75)+
+  geom_errorbar(aes(ymin=kdmean-kdsd,ymax=kdmean+kdsd,x=Target),position = position_dodge(width=0.9),width=0.2)+
+  geom_point(aes(x=Target,y=KD),position = position_dodge(width=0.9),show.legend = F)+
+  scale_y_continuous(expand=c(0,0))+theme_classic()+scale_fill_brewer(palette = "Set1")+
+  labs(x="gRNA Target",y="Knockdown %")+theme(legend.position = "none")+geom_hline(yintercept = 100,linetype="dashed")
+y+theme(axis.title =element_text(size=15),axis.text.x =element_text(size=15,angle = 45,vjust = 0.6),axis.text.y=element_text(size=17))
+```
+
+PCA plot
+```{r}
+#Using DESEQ2 results from Klf9/13 as input
+library(limma)
+load("~/Documents/CRISPRi/SeqAnalysis/Klf913old_DESeq2.RDa")
+rlg <- rlog(ddsk913, blind=FALSE)
+
+mat<-removeBatchEffect(assay(rlg),rlg$Batch)
+rlg_batch<-rlg
+assay(rlg_batch)<-mat
+tst<-plotPCA(rlg_batch,intgroup=c("Target"),ntop=500)+theme_bw()+labs(color= "Target")
+tst<-tst+scale_color_manual(values=c("blue4","sandybrown","salmon2","firebrick2"),name="gRNA Target",labels=c("Scramble gRNA","Klf13","Klf9","Klf9/13"))+
+  theme(axis.title =element_text(size=14),legend.position = "bottom")+
+  geom_point(color="black",pch=21,size=4)+geom_point(aes(fill=group),size=3.5,show.legend = F)
+```
+
+Get DEGs from KLF913 data
+```{r}
+lfc<-log2(2)
+pval<-0.05
+KLF913old<-lfcShrink(ddsk913, coef="Target_Klf913_vs_ScrR",type="apeglm")
+
+K913df_old<-as.data.frame(KLF913old)%>%rownames_to_column("ENSID")%>%
+  left_join(bmart1,by = c("ENSID"="ensembl_gene_id"))%>%
+  filter(chromosome_name%in%c(as.character(1:19),"X","Y"),gene_biotype%in%c("protein_coding"))
+K913df_filtold<-K913df_old%>%filter(abs(log2FoldChange)>=lfc,padj<=pval)
+```
+
+Klf9/13 Volcano plot
+```{r}
+volcanooo<-function(infile,lfc=1,pval=0.05,genes=NULL){
+  if(!is.null(genes)){infile<-mutate(infile,isGene=ifelse(external_gene_name%in%genes,T,F))
+  } else {infile<-mutate(infile,isGene=F)}
+  temp<-infile%>%filter(!is.na(padj))%>%
+    mutate(Effect=case_when(log2FoldChange>=lfc & padj<pval ~ "Increase",
+                             log2FoldChange<=-lfc & padj<pval ~ "Decrease",
+                             TRUE ~ "No Change"))
+  temptab<-table(temp$Effect)
+  fig1<-temp%>%ggplot(aes(x=log2FoldChange,y=-log10(padj)))+geom_point(aes(col=Effect))+
+  scale_color_manual(breaks = c("Increase","Decrease","No Change"),
+                     values=alpha(c("red", "blue","gray30"),0.5),
+                     labels=c(paste0("Increase (n=",temptab[2],")"),
+                              paste0("Decrease (n=",temptab[1],")"),"No Change"))+
+  geom_point(data=subset(temp,isGene==T),shape=21,aes(x=log2FoldChange,y=-log10(padj),fill=Effect),
+             color="black",stroke=1.2)+
+    geom_text_repel(data=subset(temp,isGene==T),
+                    aes(x=log2FoldChange,y=-log10(padj),label=external_gene_name))+
+  scale_fill_manual(breaks = c("Increase","Decrease","No Change"),
+                     values=alpha(c("red", "blue","gray30"),0.5))+
+  ylab(expression(-log[10](padj)))+
+    xlab(expression(log[2]~FoldChange))+
+  xlim(c(-10,10))+ theme_classic()+
+    geom_hline(yintercept = -log10(pval),linetype="dashed")+
+    geom_vline(xintercept = c(-lfc,lfc),linetype="dashed")+
+  theme(axis.title=element_text(size=15),axis.text = element_text(size=15),
+        legend.text = element_text(size=15),legend.title = element_text(size=18))+guides(fill="none")
+  return(fig1)
+}
+
+volcanooo(K913df_old,genes=c("Klf9","Klf13"))
+```
+
+Volcano plots for the others
+```{r}
+KLF9<-lfcShrink(ddsk913, coef="Target_Klf9_vs_ScrR",type="apeglm")
+
+K9df<-as.data.frame(KLF9)%>%rownames_to_column("ENSID")%>%
+  left_join(bmart1,by = c("ENSID"="ensembl_gene_id"))%>%
+  filter(chromosome_name%in%c(as.character(1:19),"X","Y"),gene_biotype%in%c("protein_coding"))
+K9df_filt<-K9df%>%filter(abs(log2FoldChange)>=lfc,padj<=pval)
+
+KLF13<-lfcShrink(ddsk913, coef="Target_Klf13_vs_ScrR",type="apeglm")
+
+K13df<-as.data.frame(KLF13)%>%rownames_to_column("ENSID")%>%
+  left_join(bmart1,by = c("ENSID"="ensembl_gene_id"))%>%
+  filter(chromosome_name%in%c(as.character(1:19),"X","Y"),gene_biotype%in%c("protein_coding"))
+K13df_filt<-K13df%>%filter(abs(log2FoldChange)>=lfc,padj<=pval)
+
+volcanooo(K9df,gene="Klf9")
+volcanooo(K13df,gene="Klf13")
+```
+
+
+Heatmap function
+```{r}
+heatmapplus<-function(countmat,target=NA,DEGset=NA,motifs=NULL,AvgExp=FALSE,LFC=FALSE,rnames=FALSE,
+                      clustmeth="ward.D2",
+                      hmcols=colorRampPalette(rev(brewer.pal(n=10,name="RdYlBu")))(100),
+                      Candgenes=NA,motif_title="Motif Score",col=c("blue4","salmon2","firebrick2","sandybrown"),
+                      col2=c("PRGn","YlGn"),returnraw=FALSE,...){
+  countmat_filt<-countmat%>%rownames_to_column("ENSID")%>%filter(ENSID%in%DEGset$ENSID)%>%mutate(GeneID=make.unique(GeneID))%>%
+    column_to_rownames("GeneID")
+  countmat_filt<-dplyr::select(countmat_filt,starts_with(c("Scr",target)))
+  scale_counts_filt<-apply(countmat_filt,1,FUN=function(x) (x-mean(x))/sd(x))
+  mat<-as.data.frame(t(scale_counts_filt))
+  collabs=HeatmapAnnotation(Target=str_remove(names(mat),pattern = ' [A-Z]+$'),
+                            col=list(Target=c("Scramble"=col[1],"Klf9"=col[2],"Klf13"=col[4],"Klf9/13"=col[3])),
+                            show_annotation_name=FALSE)
+  ha = rowAnnotation(foo = anno_mark(at = match(Candgenes,rownames(mat)), 
+                                     labels = Candgenes,labels_gp = gpar(fontsize = 10)))
+  fig<-Heatmap(mat,col = hmcols,name="Normalized Expression",show_column_names = TRUE,
+        clustering_distance_rows = "pearson",
+        show_row_names = FALSE,
+        clustering_method_rows = clustmeth,
+        top_annotation = collabs,column_names_rot=45,cluster_columns = F,
+        heatmap_legend_param = list(direction="horizontal"),...)
+  if(AvgExp==TRUE){
+    AvgExp<-dplyr::select(DEGset,c("external_gene_name","baseMean"))%>%
+    column_to_rownames("external_gene_name")%>%mutate(baseMean=log2(baseMean))
+    AvgExp<-AvgExp[match(rownames(mat),rownames(AvgExp)),]
+    fig<-fig+Heatmap(AvgExp,cluster_columns =FALSE,show_row_names = FALSE,
+                show_column_names = FALSE,cluster_rows=FALSE,
+                col= colorRampPalette((brewer.pal(11, "PuRd")))(100),width=unit(5,"mm"),
+                heatmap_legend_param = list(title="Avg. Log Expression",direction="horizontal"))} 
+  if(LFC==TRUE){
+    LFC<-dplyr::select(DEGset,c("external_gene_name","log2FoldChange"))%>%
+    column_to_rownames("external_gene_name")
+    LFC<-LFC[match(rownames(mat),rownames(LFC)),]
+    fig<-fig+Heatmap(LFC,cluster_columns =FALSE,show_row_names = FALSE,
+                show_column_names = FALSE,cluster_rows=FALSE,
+                col=colorRamp2(c(-4, 0, 4), c("red", "white", "green")),width=unit(5,"mm"),
+                heatmap_legend_param = list(title="log2FoldChange",direction="horizontal"))}
+  if(!is.null(motifs)) {
+      motifs<-motifs$Pospeaks[match(rownames(mat),motifs$external_gene_name)]
+      motifs[is.na(motifs)]<-0
+      fig<-fig+Heatmap(motifs,cluster_columns =FALSE,show_row_names = FALSE,
+                show_column_names = FALSE,cluster_rows=FALSE,
+                col=colorRamp2(c(0, 2.5, 5), c("white", "darkolivegreen2", "darkolivegreen4")),width=unit(5,"mm"),
+                heatmap_legend_param = list(title=motif_title,direction="horizontal"))} 
+  out<-fig+ha
+  if(returnraw){return(fig)
+    } else {
+  return(out)
+    }
+}
+```
+
+OLD KLF Motif enrichment in DEG Promoters ((v all genes)
+```{r}
+shiftfunction<-function(Peak_df,FIMO_input,reduce=TRUE,motifsize=18,pfilter=FALSE){
+  PeakGR<-GRanges(Peak_df)
+  if(reduce){
+    FIMO_input<-FIMO_input[!duplicated(FIMO_input[,3:5]),]
+  }
+  if(!isFALSE(pfilter)){
+    FIMO_input<-FIMO_input%>%filter(q.value<=pfilter)
+  }
+  true_mo<-PeakGR[match(FIMO_input$sequence_name,mcols(PeakGR)$Peak_id)]
+  mcols(true_mo)<-cbind(mcols(true_mo),FIMO_input[,7:10])
+  true_mo<-resize(true_mo,width=FIMO_input$stop)
+  true_mo<-resize(true_mo,motifsize,"end")
+  names(true_mo)<-NULL
+  return(true_mo)
+}
+
+#Load in FIMO output, peaks locations, and DEG set
+load("~/Documents/ATACseq_Project/InternalPeaks/newpeaksRK/AllProPeaks.Rda")
+bmart2<-getBM(attributes = c("external_gene_name","ensembl_gene_id"),
+              mart = ensembl)
+input<-AllProPeaks
+FIMO_NEG<-read.table("~/Documents/MotifAnalysis/FIMO/KLF_JASPAR_root/fimo.tsv",
+                     sep = "\t",header = TRUE)
+Peaks_in<-input%>%mutate(Peak_id=make.unique(external_gene_name))
+
+
+#Align the two (map motif postiion within peak)
+Peakpos<-shiftfunction(Peak_df = Peaks_in,FIMO_input = FIMO_NEG)
+Peakpos<-Peakpos[Peakpos$q.value<=0.05]
+
+
+#Setup for Fisher Test(s)
+motifbin<-countOverlaps(GRanges(input),Peakpos)>0
+input$Motif<-motifbin
+temptab<-input%>%group_by(fixedGene)%>%summarise(Pospeaks=sum(Motif),Allpeaks=n())%>%
+  left_join(bmart2,by=c("fixedGene"="ensembl_gene_id"))
+HmapMotifs<-temptab%>%filter(!is.na(external_gene_name))
+#Significance of DEG vs Not
+DEGin<-filter(K913df_filtold,log2FoldChange>=1)
+Motiftable<-temptab%>%
+  mutate(IsDEG=ifelse(external_gene_name%in%DEGin$external_gene_name,"DEG","Not_DEG"))%>%
+  group_by(IsDEG)%>%summarize(motif=sum(Pospeaks),no_motif=sum(Allpeaks)-sum(Pospeaks))%>%
+  column_to_rownames("IsDEG")
+print(Motiftable)
+#Test for Enrichment (less = Control<DEG)!
+fisher.test(Motiftable,alternative = "greater")
+```
+Make GRanges for overlap testing
+```{r}
+mart<-useMart(host="https://jan2020.archive.ensembl.org",biomart = "ENSEMBL_MART_ENSEMBL",dataset = "mmusculus_gene_ensembl")
+bmart2<-getBM(attributes = c("ensembl_gene_id","ensembl_transcript_id","transcript_start",
+"transcript_end","chromosome_name","strand","transcript_biotype","transcript_gencode_basic"), mart = mart)
+
+TSSfrombmart<-function(bmart,extend=c(100000,100000),reduce=TRUE,filter=TRUE){
+  bmart<-bmart%>%filter(chromosome_name%in%c(as.character(1:19),"X","Y"))
+    if(filter==TRUE){bmart<-bmart%>%filter(transcript_biotype=="protein_coding",
+                                   transcript_gencode_basic=="GENCODE basic")}
+  out<-GRanges(seqnames=paste0("chr",bmart$chromosome_name),
+          ranges=IRanges(start=bmart$transcript_start,end=bmart$transcript_end),
+          strand=ifelse(bmart$strand==1,"+","-"),
+          mcols=data.frame(ENSID=bmart$ensembl_transcript_id,GeneID=bmart$ensembl_gene_id))
+  outplus<-promoters(out,upstream = extend[1],downstream = extend[2])
+  if(reduce==TRUE){outlist<-split(outplus,outplus$mcols.GeneID)
+  outlist<-GenomicRanges::reduce(outlist)
+  outplus<-unlist(outlist)
+  }
+  return(sort(outplus))
+}
+
+#Get genes and TSS windows as GRanges
+TSSgenes<-TSSfrombmart(bmart2,extend=c(1000,200))
+```
+
+
+Load Subset Peak files
+```{r}
+load("DevATAC/P2P30_ATAC/Sacha/p2p30Peaks_rawcounts.RDa",verbose = T)
+devpeakGR<-devcountGR
+mcols(devpeakGR)<-NULL
+
+#gcountsnorm<-sweep(as.matrix(mcols(devcountGR)),2,FUN="/",STATS=as.numeric(apply(mcols(devcountGR),2,sum)/1e6))
+#devpeakGRfilt<-devpeakGR[apply(log2(gcountsnorm),1,max)>1]
+
+peaksin<-devpeakGR
+ovtest<-findOverlaps(TSSgenes,peaksin)
+TSSpeaks<-peaksin[ovtest@to]
+TSSpeaks$geneId<-names(TSSgenes)[ovtest@from]
+```
+
+NEW KLF Motif Enrichment (using p2p30 peaks): Use this one!!
+```{r}
+#load("~/Documents/DevATAC/p2p30PeaksSN_JASPAR2022CORE_FIMO.rda")
+Peakpos<-listy$KLF5_MA0599.1
+
+input<-Propeaks
+
+#Setup for Fisher Test(s)
+motifbin<-countOverlaps(input,Peakpos)>0
+input$Motif<-motifbin
+temptab<-as.data.frame(input)%>%group_by(geneId)%>%summarise(Pospeaks=sum(Motif),Allpeaks=n())%>%
+  left_join(bmart1,by=c("geneId"="ensembl_gene_id"))
+HmapMotifs<-temptab%>%filter(!is.na(external_gene_name))
+#Significance of DEG vs Not
+DEGin<-filter(K913df_filtold,log2FoldChange>=1)
+Motiftable<-temptab%>%
+  mutate(IsDEG=ifelse(external_gene_name%in%DEGin$external_gene_name,"DEG","Not_DEG"))%>%
+  group_by(IsDEG)%>%summarize(motif=sum(Pospeaks),no_motif=sum(Allpeaks)-sum(Pospeaks))%>%
+  column_to_rownames("IsDEG")
+print(Motiftable)
+#Test for Enrichment (less = Control<DEG)!
+fisher.test(Motiftable,alternative = "greater")
+```
+
+```{r}
+library(ggrepel)
+volcanoooTF<-function(infile,pval=0.01,motifs=NA,allpostext=F,JASPARID=T){
+  if(JASPARID){infile$TFID<-str_split(infile$TFID,pattern = "_",simplify = T)[,1]}
+  if(!is.na(motifs)){infile<-mutate(infile,isMotif=ifelse(grepl(TFID,pattern=motifs,ignore.case=T),T,F))
+  } else {infile<-mutate(infile,isMotif=F)}
+  temp<-infile%>%filter(!is.nan(padj))%>%
+                          mutate(Effect=case_when(Enrichment>1 & padj<pval ~"Enriched(Test)",
+                             Enrichment<1 & padj<pval ~ "Enriched(Control)",
+                             TRUE ~ "No Change"))
+  temptab<-table(temp$Effect)
+  fig1<-temp%>%ggplot(aes(x=Enrichment,y=-log10(padj)))+geom_point(aes(col=Effect))+
+  scale_color_manual(breaks = c("Enriched(Test)","Enriched(Control)","No Change"),
+                     values=ggplot2::alpha(c("red", "blue","gray30"),0.5))+
+  geom_point(data=subset(temp,isMotif==T),shape=21,aes(x=Enrichment,y=-log10(padj),fill=Effect),
+             color="black",stroke=1.2)+
+  scale_fill_manual(breaks = c("Enriched(Test)","Enriched(Control)","No Change"),
+                     values=c("red", "blue","gray30"))+
+    geom_text_repel(data=subset(temp,isMotif==T),
+                    aes(x=Enrichment,y=-log10(padj),label=TFID))+
+  ylab(expression(-log[10](p.val)))+
+    xlab("Enrichment")+
+    theme_classic()+
+    geom_hline(yintercept = -log10(pval),linetype="dashed")+
+     geom_vline(xintercept = 1,linetype="dashed")+
+  theme(axis.title=element_text(size=15),axis.text = element_text(size=15),legend.position = "bottom",
+        legend.text = element_text(size=15),legend.title = element_text(size=18))+guides(fill="none")
+  if(allpostext==T){
+    fig1<- fig1 + geom_text_repel(data=subset(temp,Effect=="Enriched(Test)"),
+                                  aes(x=Enrichment,y=-log10(padj),label=TFID))
+  }
+  return(fig1)
+}
+
+contingency_mat<-function(col,hitmat=temp){
+  pos_test<-sum(col[hitmat])
+  neg_test<-length(col[hitmat])-pos_test
+  pos_cont<-sum(col[!hitmat])
+  neg_cont<-length(col[!hitmat])-pos_cont
+  out<-matrix(c(pos_test,neg_test,pos_cont,neg_cont),nrow=2,ncol=2,byrow=T)
+  return(out)
+}
+```
+
+All Motif Enrichment
+```{r}
+#load("~/Documents/DevATAC/p2p30PeaksSN_JASPAR2022CORE_FIMO.rda")
+#load("~/Documents/DevATAC/p2p30PeaksSN_JASPAR2022center_FIMO.rda")
+peaksin<-Propeaks
+#peaksin<-TSSpeaks[TSSpeaks$geneID%in%bfilt$ensembl_gene_id[bfilt$external_gene_name%in%TPMfilt]]
+
+testout<-sapply(listy,function(x) countOverlaps(peaksin,x))
+
+listx<-list()
+for(i in seq(ncol(testout))){
+  listx[[i]]<-testout[,i]>0
+}
+
+DEGin<-filter(K913df_filtold,log2FoldChange>=1)
+temp<-peaksin$geneId%in%DEGin$ENSID
+
+contabs<-lapply(listx,FUN=contingency_mat)
+names(contabs)<-names(listy)
+
+Chitest_pos<-data.frame(Enrichment=sapply(contabs,FUN=function(x) (x[1,1]/sum(x[1,]))/(x[2,1]/sum(x[2,]))))%>%
+  mutate(TFID=names(contabs),Pval=sapply(contabs,FUN=function(x) chisq.test(x)$p.value))%>%
+  mutate(padj=p.adjust(Pval,"BH"))
+
+Fishtest<-lapply(contabs,FUN=function(x) fisher.test(x))
+Fishtest_pos<-data.frame(Enrichment=sapply(Fishtest,function(x) x$estimate),
+                         Pval=sapply(Fishtest,function(x) x$p.value))%>%
+                           mutate(TFID=names(contabs),padj=p.adjust(Pval,method="BH"))
+
+volcanoooTF(Chitest_pos,motifs="Klf")
+```
+
+
+Plot heatmap, split w/ labels
+```{r}
+library(ComplexHeatmap)
+library(RColorBrewer)
+library(circlize)
+
+IonChannels<-paste(c("^Gri[akn]+[1-9]*","^Scn[1-9]*[ab]+","^Kcn[mnujtkabcdfghqsv]+[1-9]*","^Cacn[agb]+[1-9]*","^Gabr[abdegpqr]+","^Hcn[1-4]*"),collapse = "|")
+allTFs<-read.table("~/Documents/Misc/Mus_musculus_TF.txt",header = TRUE)
+axongenes<-c("Dpysl5","L1cam","Gap43","Rac3","Tubb2b","Tubb3","Hcn3","Cacng4","Ablim3","Dpysl3","Ndrg1","Itgb4","Atat1","Dpysl2","Mical1","Hook2","Tppp3")
+KLFbestgenes<-c("S100a10","Dpysl3","Dpysl5","Tubb2b","Gap43","Tppp3","Rac3","Bcam","Ppp1r18","Scn9a","Scn3a","Scn3b","Hcn3","Atat1","Hook2","Maged2","L1cam","N4bp3","Plppr1","Prmt2","Trpm3","Pcdhgc4","Zcchc12","Ablim3","Ddah2","Cacng4","Tubb3","Tubb5","Tubb1a","Stmn2","Eps8","Coro2a","Myo1c","Iqgap1","Mturn","Rhov","Pik3dc","Kcnip3","Cobl","Nectin2","Plxna3","Diaph3","Syndig1l","Plppr3","Klf9","Klf13","Klf6","Klf7")
+
+#normalized counts
+countmat_rlg<-as.data.frame(assay(rlg_batch))%>%
+  mutate(GeneID=bmart1$external_gene_name[match(rownames(.),bmart1$ensembl_gene_id)])
+#names(countmat_rlg)<-c("Klf13 A","Klf13 B","Klf13 C","Klf9 A","Klf9 B","Klf9 C","Klf9/13 A", "Klf9/13 B","Klf9/13 C","Scramble A","Scramble B","Scramble C","Scramble D","GeneID")
+names(countmat_rlg)<-c("Klf13 A","Klf13 B","Klf13 C","Klf13 D","Klf9 A","Klf9 B","Klf9 C","Klf9 D","Klf9/13 A", "Klf9/13 B","Klf9/13 C","Klf9/13 D","Scramble A","Scramble B","Scramble C","Scramble D","GeneID")
+
+DEGset<-K913df_filtold
+Candgenes<-c(intersect(DEGset$external_gene_name,c("Klf9","Klf13",axongenes)),
+                grep(DEGset$external_gene_name,pattern=IonChannels,value=TRUE))
+
+y<-heatmapplus(countmat_rlg,target=c("Klf13","Klf9","Klf9/13"),DEGset = DEGset,Candgenes=Candgenes,motifs=temptab,motif_title = "KLF Motif Counts",row_km=2,show_parent_dend_line=F,row_title=c("",""))
+#save as pdf (avoid mislabeling rows)
+#pdf(file="file/path/image.pdf",width=8,height=6)
+draw(y,heatmap_legend_side="bottom")
+#dev.off()
+```
+
+Normalized Trend Line Plots
+```{r}
+DEGset<-K913df_filtold%>%filter(log2FoldChange>=1)
+
+countmat_filt<-countmat_rlg%>%filter(GeneID%in%DEGset$external_gene_name)
+scale_counts_filt<-apply(countmat_filt[,-17],1,FUN=function(x) (x-mean(x))/sd(x))
+mat<-as.data.frame(t(scale_counts_filt))%>%rownames_to_column("ENSID")%>%pivot_longer(-ENSID,names_to = "Sample")%>%
+  mutate(Celltype=str_remove(Sample," [A-Z]$"))%>%group_by(ENSID,Celltype)%>%summarize(avgexp=mean(value))%>%
+  mutate(Celltype=factor(Celltype,levels = c("Scramble","Klf13","Klf9","Klf9/13")))%>%
+  group_by(Celltype)
+plotup<-mat%>%ggplot(aes(x=Celltype,y=avgexp))+geom_line(aes(group=ENSID),alpha=0.1,size=1)+  stat_summary(fun=mean, group=1, geom="line", colour="blue",size=2)+stat_summary(fun=mean,fun.min=function(x) mean(x)-sd(x),fun.max=function(x) mean(x)+sd(x),geom="errorbar", colour="blue",width=0.2,size=2)+labs(x="gRNA Target", y="Normalzied Expresion")+theme_bw()+theme(axis.title =element_text(size=17),axis.text =element_text(size=15))
+
+
+DEGset<-K913df_filtold%>%filter(log2FoldChange<=-1)
+
+countmat_filt<-countmat_rlg%>%filter(GeneID%in%DEGset$external_gene_name)
+scale_counts_filt<-apply(countmat_filt[,-17],1,FUN=function(x) (x-mean(x))/sd(x))
+mat<-as.data.frame(t(scale_counts_filt))%>%rownames_to_column("ENSID")%>%pivot_longer(-ENSID,names_to = "Sample")%>%
+  mutate(Celltype=str_remove(Sample," [A-Z]$"))%>%group_by(ENSID,Celltype)%>%summarize(avgexp=mean(value))%>%
+  mutate(Celltype=factor(Celltype,levels = c("Scramble","Klf13","Klf9","Klf9/13")))%>%
+  group_by(Celltype)
+plotdown<-mat%>%ggplot(aes(x=Celltype,y=avgexp))+geom_line(aes(group=ENSID),alpha=0.1,size=1)+  stat_summary(fun=mean, group=1, geom="line", colour="red",size=2)+stat_summary(fun=mean,fun.min=function(x) mean(x)-sd(x),fun.max=function(x) mean(x)+sd(x),geom="errorbar", colour="red",width=0.2,size=2)+labs(x="gRNA Target", y="Normalzied Expresion")+theme_bw()+theme(axis.title =element_text(size=18),axis.text =element_text(size=16))
+
+```
+
+
+```{r}
+quickplotnew<-function(TPMmatrix,celltypes=c("Klf9","Klf13","Klf913"),genes=NA,logscale=F){
+  mat<-TPMmatrix%>%filter(gene_id%in%genes)%>%
+    dplyr::select(contains("Scr"),contains(celltypes),"gene_id")%>%
+    pivot_longer(cols = -gene_id)%>%mutate(Target=str_remove(name,"(GFP)?_?[A-Z][0-9]?$"))
+  mat$Target[mat$Target=="ScrR"]="Scramble gRNA"
+  if(logscale){mat<-mat%>%mutate(value=log2(value)+1)}
+  out<-mat%>%group_by(gene_id,Target)%>%
+    mutate(mean=mean(value),std=sd(value),
+           Target=factor(Target,levels = c("Scramble gRNA","Klf13","Klf9","Klf913")))%>%
+    ggplot(aes(x=gene_id,y=mean,fill=Target))+
+    geom_bar(stat="summary",position="dodge",color="black")+
+    geom_errorbar(aes(ymin=mean-std,ymax=mean+std),position=position_dodge(.9),width=0.2)+
+    geom_point(aes(y=value),position=position_dodge(width=0.9),show.legend = F)+theme_classic()+
+    scale_fill_manual(values=c("blue4","sandybrown","salmon2","firebrick2"))+labs(y="Normalized Counts (TPM)",x="Gene",fill="Target")+
+    scale_y_continuous(expand=c(0,NA))
+  if(logscale){out<-out+labs(y="Normalized Counts (Log2TPM)")}
+  return(out)
+}
+
+TPMmat<-read.csv("~/Documents/Counts/KLF_TPM.csv",row.names = 2)%>%dplyr::select(-X.1)
+TPMmat<-TPMmat[,-c(4,9,16)]
+
+topgenes<-c("Ablim3","Atat1","Cacng4","Dkkl1","Dpysl3","Maged2","Tubb2b","Zcchc12","Hook2","Tppp3")
+targetplot<-quickplotnew(TPMmatrix = TPMmat,celltypes = c("Klf9","Klf13"),genes = topgenes)+scale_fill_manual(values=c("blue4","sandybrown","salmon2","firebrick2"))+labs(y="Normalized Counts (TPM)",x="Gene",fill="Target")+theme(legend.position = "right",axis.title =element_text(size=15),axis.text.x =element_text(size=15,angle = 45,vjust = 0.6))
+```
+
+Venn Diagram plots
+```{r}
+library(eulerr)
+K913_13_all<-length(intersect(K913df_filtold$ENSID,K13df_filt$ENSID))
+K913_13_up<-length(intersect(K913df_filtold[K913df_filtold$log2FoldChange>=1,"ENSID"],K13df_filt[K13df_filt$log2FoldChange>=1,"ENSID"]))
+K913_13_down<-length(intersect(K913df_filtold[K913df_filtold$log2FoldChange<=-1,"ENSID"],K13df_filt[K13df_filt$log2FoldChange<=-1,"ENSID"]))
+K9_13_all<-length(intersect(K13df_filt$ENSID,K9df_filt$ENSID))
+K9_13_up<-length(intersect(K9df_filt[K9df_filt$log2FoldChange>=1,"ENSID"],K13df_filt[K13df_filt$log2FoldChange>=1,"ENSID"]))
+K9_13_down<-length(intersect(K9df_filt[K9df_filt$log2FoldChange<=-1,"ENSID"],K13df_filt[K13df_filt$log2FoldChange<=-1,"ENSID"]))
+K913_9_all<-length(intersect(K913df_filtold$ENSID,K9df_filt$ENSID))
+K913_9_up<-length(intersect(K913df_filtold[K913df_filtold$log2FoldChange>=1,"ENSID"],K9df_filt[K9df_filt$log2FoldChange>=1,"ENSID"]))
+K913_9_down<-length(intersect(K913df_filtold[K913df_filtold$log2FoldChange<=-1,"ENSID"],K9df_filt[K9df_filt$log2FoldChange<=-1,"ENSID"]))
+
+klfcomp<-data.frame(Klf9=c(length(K9df_filt$ENSID),length(K9df_filt[K9df_filt$log2FoldChange>=1,"ENSID"]),length(K9df_filt[K9df_filt$log2FoldChange<=-1,"ENSID"]),
+                           K9_13_all,K9_13_up,K9_13_down,
+                           K913_9_all,K913_9_up,K913_9_down),
+                    Klf13=c(K9_13_all,K9_13_up,K9_13_down,
+                            length(K13df_filt$ENSID),length(K13df_filt[K13df_filt$log2FoldChange>=1,"ENSID"]),length(K13df_filt[K13df_filt$log2FoldChange<=-1,"ENSID"]),
+                            K913_13_all,K913_13_up,K913_13_down),
+                    Klf913=c(K913_9_all,K913_9_up,K913_9_down,
+                             K913_13_all,K913_13_up,K913_13_down,
+                             length(K913df_filtold$ENSID),length(K913df_filtold[K913df_filtold$log2FoldChange>=1,"ENSID"]),length(K913df_filtold[K913df_filtold$log2FoldChange<=-1,"ENSID"])))
+
+rownames(klfcomp)<-c("Klf9_all","Klf9_up","Klf9_down","Klf13_all","Klf13_up","Klf13_down","Klf913_all","Klf913_up","Klf913_down")
+
+
+vdall<-euler(c("Klf9"=4,"Klf13"=4,"Klf9/13"=187,"Klf9&Klf9/13"=24,"Klf9&Klf13"=0,"Klf13&Klf9/13"=1,"Klf9&Klf13&Klf9/13"=0))
+vdup<-euler(c("Klf9"=1,"Klf13"=3,"Klf9/13"=160,"Klf9&Klf9/13"=21,"Klf9&Klf13"=0,"Klf13&Klf9/13"=0,"Klf9&Klf13&Klf9/13"=0))
+vddown<-euler(c("Klf9"=3,"Klf13"=3,"Klf9/13"=27,"Klf9&Klf9/13"=3,"Klf9&Klf13"=0,"Klf13&Klf9/13"=1,"Klf9&Klf13&Klf9/13"=0))
+
+plot(vd,counts=TRUE,font=7,labels=NULL,quantities=list(cex=2),cex=1,alpha=0.5,fill=c("turquoise3","green3","firebrick2"))
+plot(vdup,counts=TRUE,font=7,labels=NULL,quantities=list(cex=2.5),cex=1,alpha=0.5,fill=c("turquoise3","green3","firebrick2"))
+plot(vddown,counts=TRUE,font=7,labels=NULL,quantities=list(cex=3),cex=1,alpha=0.5,fill=c("turquoise3","green3","firebrick2"))
+```
+
+```{r}
+countmat<-read.csv("~/Documents/DevATAC/P2P30_RNA/p2p30_mm10_counts.csv")%>%mutate(X=make.unique(X))%>%column_to_rownames("X")
+countmat<-countmat[,c(1:4,13:16,21:28)]
+#countmat<-countmat%>%dplyr::select(contains("L4_RORht"))
+Age<-ifelse(grepl(names(countmat),pattern="p2"),"P2","P30")
+Layer<-ifelse(grepl(names(countmat),pattern="L4"),"L4","L6")
+sampledf<-data.frame(Age=Age,Layer=Layer)
+rownames(sampledf)<-colnames(countmat)
+
+#countmat<-read.csv("~/Documents/DevATAC/P2P30_RNA/p2p30_mm10_counts_s1.csv")%>%mutate(X=make.unique(X))%>%column_to_rownames("X")
+#countmat<-countmat%>%dplyr::select(contains("L4_RORht"))%>%dplyr::select(matches("p2|p30|p7"))
+#Age<-ifelse(grepl(names(countmat),pattern="p2"),"P2","P30")
+#Layer<-ifelse(grepl(names(countmat),pattern="L4"),"L4","L6")
+#sampledf<-data.frame(Age=Age,Layer=Layer)
+#rownames(sampledf)<-colnames(countmat)
+
+DESeq <- DESeqDataSetFromMatrix(countmat,
+                                   colData = sampledf,
+                                   design = ~ Layer+Age)
+DESeq$Target<-relevel(DESeq$Age,"P2")
+keep <- rowSums(counts(DESeq)) >= 10
+filt <- DESeq[keep,]
+Devdds <- DESeq(filt)
+
+DevLFC<-lfcShrink(Devdds, coef="Age_P30_vs_P2",type="apeglm")
+
+Devdf<-as.data.frame(DevLFC)%>%rownames_to_column("ENSID")%>%
+  left_join(bmart1,by = c("ENSID"="external_gene_name"))
+
+Devrlg<-as.data.frame(assay(rlog(Devdds,blind = FALSE)))
+```
+Ephys - mini plot
+```{r}
+
+```
+
+Ephys - FI plot
+```{r}
+
+```
+
+
+line plots of all Klf9/13 targets across development (p2 > p7 > p30)
+```{r}
+bmart3<-getBM(attributes = c("ensembl_gene_id_version","external_gene_name"), mart = ensembl)
+DevTPM<-read.csv("~/Documents/Counts/p2p30/p2p30_L4_RefGenes.csv",row.names = 1)
+klfensnames<-c("Klf13","Klf9"))
+DEGset<-K913df_filtold%>%filter(log2FoldChange>=1)
+
+countmat_filt<-DevTPM%>%filter(external_gene_name%in%c(DEGset$external_gene_name,"Klf9","Klf13"))
+scale_counts_filt<-apply(countmat_filt[,-13],1,FUN=function(x) (x-mean(x))/sd(x))
+mat<-as.data.frame(t(scale_counts_filt))%>%rownames_to_column("ENSID")%>%pivot_longer(-ENSID,names_to = "Sample")%>%
+  mutate(Age=str_extract(Sample,pattern="p[0-9]+"))%>%mutate(Age=str_replace(Age,pattern="p",replacement="P"))%>%
+  mutate(Age=fct_relevel(Age,"P2","P7","P30"))%>%group_by(ENSID,Age)%>%summarize(avgexp=mean(value))%>%
+  group_by(Age)
+ploty<-mat%>%filter(!ENSID%in%klfensnames$ensembl_gene_id_version)%>%ggplot(aes(x=Age,y=avgexp))+geom_line(aes(group=ENSID),alpha=0.1)+  stat_summary(fun=mean, group=1, geom="line", colour="blue",linewidth=1)+stat_summary(fun=mean,fun.min=function(x) mean(x)-sd(x),fun.max=function(x) mean(x)+sd(x),geom="errorbar", colour="blue",width=0.2,linewidth=1)+labs(x="Age", y="Normalzied Expresion")+theme_bw()+theme(axis.title =element_text(size=17),axis.text =element_text(size=15))
+ploty+geom_line(data=subset(mat,ENSID%in%klfensnames),aes(x=Age,y=avgexp,col=ENSID,group=ENSID),linewidth=1.2,linetype="dashed")+scale_color_manual(name="Gene",values=c("red3","tomato"),labels=c("Klf9","Klf13"))+theme(legend.position = "bottom")
+```
+
+Dot plot of P2 v P30, K913 v scramble
+```{r}
+Dev913<-K913df_old[,c(1,3,5,6,7)]%>%inner_join(Devdf[,c(1,3,6)],by=c("external_gene_name"="ENSID"),suffix=c("_KLF","_Dev"))%>%
+  mutate(DEG=ifelse(ENSID%in%K913df_filtold$ENSID,"Klf9/13 Target","Not Target"))%>%dplyr::filter(!external_gene_name%in%c("Klf9","Klf13"))
+
+out<-ggplot(Dev913,aes(x=log2FoldChange_Dev,y=log2FoldChange_KLF))+geom_point(aes(col=DEG,alpha=DEG)) + scale_color_manual(values = c("Not Target" = "black", "Klf9/13 Target" = "firebrick2")) + 
+  labs(x="log2FoldChange(P2 v P30)",y="log2FoldChange(Klf9/13 v Scramble)",col="")+geom_vline(xintercept = 0,linetype="dashed")+geom_hline(yintercept = 1,linetype="dashed")+
+  geom_hline(yintercept = -1,linetype="dashed") + theme_bw() + geom_smooth(method=lm,se = T,col="grey40")+stat_cor(aes(label=..r.label..),label.x=4,label.y=4,size=5)+
+  stat_smooth(data=subset(Dev913,DEG=="Klf9/13 Target"),col = "firebrick2",method=lm,fullrange = T) + 
+  stat_cor(data=subset(Dev913,DEG=="Klf9/13 Target"),col="firebrick2",label.x=4,label.y=3.5,size=5)+scale_alpha_manual(values=c(1,0.4))+
+  theme(axis.title =element_text(size=16),axis.text =element_text(size=13))
+
+```
+
+Klf67 Age qPCR
+```{r}
+chk<-fread("~/Documents/qPCR/Klf67913_Age/K67Ageqpcr.csv")
+KLF<-chk%>%dplyr::select(SampID,FC_K6_P10,FC_K7_P10,Virus,Age)%>%
+  pivot_longer(cols=c(FC_K6_P10,FC_K7_P10),names_to = "Target",values_to = "FC")%>%
+  mutate(Target=ifelse(Target=="FC_K6_P10","Klf6","Klf7"))%>%arrange(Target,desc(Virus),Age)%>%
+  group_by(Virus,Age,Target)%>%mutate(fcmean=mean(FC))
+n<-length(unique(KLF$SampID))
+KLF$controlmean<-c(rep(KLF$fcmean[1],n),rep(KLF$fcmean[n+1],n))
+KLF<-KLF%>%mutate(fcnorm=FC/controlmean)%>%mutate(normmean=mean(fcnorm),fcsd=sd(fcnorm))%>%mutate(Group=paste(Virus, Age, sep=" "))%>%
+  mutate(Group=factor(Group,levels = c("Scr-GFP P10-12","Klf67-GFP P10-12","Scr-GFP P18-20","Klf67-GFP P18-20")))
+y<-ggplot(KLF,aes(x=Target,y=normmean,fill=Group))+geom_bar(stat="summary",position="dodge",color="black")+
+  geom_point(aes(x=Target,y=FC),position = position_dodge(width=0.9),show.legend = F)+
+  geom_errorbar(aes(ymin=normmean-fcsd,ymax=normmean+fcsd,x=Target),position = position_dodge(width=0.9),width=0.2)+
+  scale_y_continuous(expand=c(0,0),limit=c(0,1.75))+theme_classic()+scale_fill_brewer(palette = "Paired")+
+  labs(x="Measured Gene",y="Relative mRNA Levels",fill="gRNA Target")+theme(legend.position = "right",text=element_text(size=16))+
+  geom_hline(yintercept = 1,linetype="dashed")+theme(text=element_text(size=18),legend.position = "right",legend.text = element_text(size=12))
+
+```
+
+Klf67 RNA-seq by Age
+```{r}
+#load("~/Documents/CRISPRi/SeqAnalysis/KlfP10P20_DESeq2.RDa")
+lfc<-log2(2)
+pval<-0.05
+KLF67_20<-lfcShrink(dds, contrast = c("Group","Klf67_P20","ScrGFP_P20"),type="ashr")
+
+K67df_20<-as.data.frame(KLF67_20)%>%rownames_to_column("ENSID")%>%
+  left_join(bmart1,by = c("ENSID"="ensembl_gene_id"))%>%
+  filter(chromosome_name%in%c(as.character(1:19),"X","Y"),gene_biotype%in%c("protein_coding"))
+K67df20_filt<-K67df_20%>%filter(abs(log2FoldChange)>=lfc,padj<=pval)
+
+KLF67_10<-lfcShrink(dds, contrast = c("Group","Klf67_P10","ScrGFP_P10"),type="ashr")
+
+K67df_10<-as.data.frame(KLF67_10)%>%rownames_to_column("ENSID")%>%
+  left_join(bmart1,by = c("ENSID"="ensembl_gene_id"))%>%
+  filter(chromosome_name%in%c(as.character(1:19),"X","Y"),gene_biotype%in%c("protein_coding"))
+K67df10_filt<-K67df_10%>%filter(abs(log2FoldChange)>=lfc,padj<=pval)
+
+K67p10_vol<-volcanooo(K67df_10,genes=c("Klf6","Klf7"))
+K67p20_vol<-volcanooo(K67df_20,genes=c("Klf6","Klf7"))
+```
+
+```{r}
+heatmapplus2<-function(countmat,target=NA,DEGset=NA,motifs=NULL,AvgExp=FALSE,LFC=FALSE,rnames=FALSE,
+                      clustmeth="ward.D2",remix=TRUE,
+                      hmcols=colorRampPalette(rev(brewer.pal(n=10,name="RdYlBu")))(100),
+                      Candgenes=NA,motif_title="Motif Score",col=c("lightblue2","blue4","firebrick2","lightgreen","forestgreen"),
+                      col2=c("PRGn","YlGn"),returnraw=FALSE,...){
+  countmat_filt<-countmat%>%rownames_to_column("ENSID")%>%filter(ENSID%in%DEGset$ENSID)%>%
+    column_to_rownames("GeneID")%>%dplyr::select(-ENSID)
+  if(remix==TRUE){countmat_filt<-dplyr::select(countmat_filt,starts_with(c("Scr",target)))}
+  scale_counts_filt<-apply(countmat_filt,1,FUN=function(x) (x-mean(x))/sd(x))
+  mat<-as.data.frame(t(scale_counts_filt))
+  collabs=HeatmapAnnotation(Target=str_remove(names(mat),pattern = ' [A-Z]+$'),
+                            col=list(Target=c("Scramble P10"=col[1],"Scramble P20"=col[2],"Klf9/13 P20"=col[3],"Klf6/7 P10"=col[4],"Klf6/7 P20" = col[5])),
+                            show_annotation_name=FALSE)
+  ha = rowAnnotation(foo = anno_mark(at = match(Candgenes,rownames(mat)), 
+                                     labels = Candgenes,labels_gp = gpar(fontsize = 10)))
+  fig<-Heatmap(mat,col = hmcols,name="Normalized Expression",show_column_names = TRUE,
+        clustering_distance_rows = "pearson",
+        clustering_method_rows = clustmeth,
+        top_annotation = collabs,column_names_rot=45,cluster_columns = F,
+        heatmap_legend_param = list(direction="horizontal"),...)
+  if(AvgExp==TRUE){
+    AvgExp<-dplyr::select(DEGset,c("external_gene_name","baseMean"))%>%
+    column_to_rownames("external_gene_name")%>%mutate(baseMean=log2(baseMean))
+    AvgExp<-AvgExp[match(rownames(mat),rownames(AvgExp)),]
+    fig<-fig+Heatmap(AvgExp,cluster_columns =FALSE,show_row_names = FALSE,
+                show_column_names = FALSE,cluster_rows=FALSE,
+                col= colorRampPalette((brewer.pal(11, "PuRd")))(100),width=unit(5,"mm"),
+                heatmap_legend_param = list(title="Avg. Log Expression",direction="horizontal"))} 
+  if(LFC==TRUE){
+    LFC<-dplyr::select(DEGset,c("external_gene_name","log2FoldChange"))%>%
+    column_to_rownames("external_gene_name")
+    LFC<-LFC[match(rownames(mat),rownames(LFC)),]
+    fig<-fig+Heatmap(LFC,cluster_columns =FALSE,show_row_names = FALSE,
+                show_column_names = FALSE,cluster_rows=FALSE,
+                col=colorRamp2(c(-4, 0, 4), c("red", "white", "green")),width=unit(5,"mm"),
+                heatmap_legend_param = list(title="log2FoldChange",direction="horizontal"))}
+  if(!is.null(motifs)) {
+      motifs<-motifs$Pospeaks[match(rownames(mat),motifs$external_gene_name)]
+      motifs[is.na(motifs)]<-0
+      fig<-fig+Heatmap(motifs,cluster_columns =FALSE,
+                show_column_names = FALSE,cluster_rows=FALSE,
+                col=colorRamp2(c(0, 2.5, 5), c("white", "darkolivegreen2", "darkolivegreen4")),width=unit(5,"mm"),
+                heatmap_legend_param = list(title=motif_title,direction="horizontal"))} 
+  out<-fig+ha
+  if(returnraw){return(fig)
+    } else {
+  return(out)
+    }
+}
+```
+
+```{r}
+countmat_rlg<-as.data.frame(assay(rlog(dds,blind = FALSE)))%>%
+  mutate(GeneID=bmart1$external_gene_name[match(rownames(.),bmart1$ensembl_gene_id)])
+#names(countmat_rlg)<-c("Klf13 A","Klf13 B","Klf13 C","Klf9 A","Klf9 B","Klf9 C","Klf9/13 A", "Klf9/13 B","Klf9/13 C","Scramble A","Scramble B","Scramble C","Scramble D","GeneID")
+names(countmat_rlg)<-c("Klf6/7 P10 A","Klf6/7 P10 B","Klf6/7 P10 C","Klf6/7 P10 D","Klf6/7 P20 A","Klf6/7 P20 B","Klf6/7 P20 C","Klf6/7 P20 D","Klf9/13 P20 A","Klf9/13 P20 B","Klf9/13 P20 C","Klf9/13 P20 D", "Scramble P10 A","Scramble P10 B","Scramble P10 C","Scramble P10 D","Scramble P20 A","Scramble P20 B","Scramble P20 C","Scramble P20 D","GeneID")
+
+DEGset<-rbind(K67df10_filt)
+Candgenes<-c(intersect(DEGset$external_gene_name,c(axongenes,"Klf6","Klf7")),
+                grep(DEGset$external_gene_name,pattern=IonChannels,value=TRUE))
+set.seed(777)
+x<-heatmapplus2(countmat_rlg,target=c("Klf6/7"),DEGset = DEGset,Candgenes = Candgenes,row_km=3,row_km_repeats=100,show_parent_dend_line=F,row_title=c("","",""))
+#save as pdf (avoid mislabeling rows)
+#pdf(file="~/Documents/CRISPRi/Figures/K67hm_split2.pdf",width=8,height=6)
+x2<-draw(x,heatmap_legend_side = "bottom")
+#dev.off()
+
+klist<-row_order(x2)
+countmat_filt<-countmat_rlg%>%rownames_to_column("ENSID")%>%filter(ENSID%in%DEGset$ENSID)
+temp<-data.frame(RowID=do.call(c,klist),Cluster=rep(names(klist),sapply(klist,length)))%>%arrange(RowID)
+temp$ENSID<-countmat_filt$ENSID
+temp$GeneID<-countmat_filt$GeneID
+#Devclust<-temp%>%filter(Cluster==3)
+
+#save as pdf (avoid mislabeling rows)
+
+pdf(file="~/Documents/CRISPRi/Figures/K67hm_splitnew.pdf",width=8,height=6)
+x<-heatmapplus2(countmat_rlg,target=c("Klf6/7"),DEGset = DEGset,Candgenes = Candgenes,motifs = temptab,
+                motif_title = "KLF Motif Counts",show_parent_dend_line=F,row_title=c("","",""),row_split = factor(as.numeric(temp$Cluster),levels=c(2,3,1)))
+x<-heatmapplus2(countmat_rlg,target=c("Klf6/7"),DEGset = DEGset,Candgenes = Candgenes,show_parent_dend_line=F,row_title=c("","",""),
+                row_split =factor(as.numeric(temp$Cluster),levels=c(2,3,1)))
+x2<-draw(x,heatmap_legend_side = "bottom")
+dev.off()
+```
+
+```{r}
+#Significance of DEG vs Not
+DEGin<-filter(K67df10_filt,log2FoldChange<=-1)
+Motiftable<-temptab%>%
+  mutate(IsDEG=ifelse(external_gene_name%in%DEGin$external_gene_name,"DEG","Not_DEG"))%>%
+  group_by(IsDEG)%>%summarize(motif=sum(Pospeaks),no_motif=sum(Allpeaks)-sum(Pospeaks))%>%
+  column_to_rownames("IsDEG")
+print(Motiftable)
+#Test for Enrichment (less = Control<DEG)!
+fisher.test(Motiftable,alternative = "greater")
+```
+
+Klf6/7 GO analysis
+```{r}
+library(clusterProfiler)
+library(org.Mm.eg.db)
+
+geneuniv<-K67df_10$ENSID
+downgenes<-K67df10_filt%>%filter(log2FoldChange<=0,!external_gene_name%in%c("Klf6","Klf7"))
+
+#downgenes<-temp%>%filter(Cluster==3,!GeneID%in%c("Klf6","Klf7"))
+
+#upgenes<-cpcfilt%>%filter(log2FoldChange>=log2(fc),padj<=pval)
+GOdown<- enrichGO(gene = downgenes$ENSID, universe = geneuniv,
+                OrgDb = org.Mm.eg.db,
+                ont = "ALL",minGSSize = 25,
+                pAdjustMethod = "BH",keyType = "ENSEMBL",
+                pvalueCutoff  = 0.05,qvalueCutoff = 0.05,
+                readable = TRUE)
+
+
+go_gene_matrix <- simplify(GOdown,0.5)@result %>%
+  dplyr::select(Description, qvalue, geneID) %>%
+  separate_rows(geneID, sep = "/") %>%      # one row per (GO term, gene) pair
+  mutate(present = 1) %>%
+  pivot_wider(names_from = geneID,values_from=present,values_fill = 0)
+
+barplot<-go_gene_matrix[c(13,14,8,2,9,11,10,12,3,5,4),]%>%
+  mutate(Description=factor(Description,levels=.$Description[order(.$qvalue,decreasing = T)]))%>%
+  ggplot(aes(x=Description,y=-log10(qvalue)))+geom_col(color="black",linewidth = 0.25,width = 0.75,fill="lightgreen")+
+  coord_flip()+scale_x_discrete(position = "top")+scale_y_continuous(expand = expansion(mult = c(0,0.1)))+theme_classic()+
+  theme(axis.text.y.right = element_text(hjust = 0,face = "bold"),axis.text = element_text(size = 12),
+        title = element_text(size=14,face="bold"),axis.ticks.length = unit(0.3,"cm"))
+
+#Get top expressed genes from interesting terms for new heatmap
+#Actin-related genes ( top 15)
+actgenes<-unique(c(names(go_gene_matrix)[which(go_gene_matrix[10,]==1)],names(go_gene_matrix)[which(go_gene_matrix[4,]==1)]))
+actgenes_top<-K67df_10%>%filter(external_gene_name%in%actgenes)%>%arrange(desc(baseMean))%>%head(15)%>%pull(external_gene_name)
+#Calcium dependent genes (top 10)
+cagenes<-unique(c(names(go_gene_matrix)[which(go_gene_matrix[13,]==1)],names(go_gene_matrix)[which(go_gene_matrix[14,]==1)]))
+cagenes_top<-K67df_10%>%filter(external_gene_name%in%cagenes)%>%arrange(desc(baseMean))%>%head(10)%>%pull(external_gene_name)
+#Axon genes (top 15)
+axgenes<-names(go_gene_matrix)[which(go_gene_matrix[9,]==1)]
+axgenes_top<-K67df_10%>%filter(external_gene_name%in%axgenes)%>%arrange(desc(baseMean))%>%head(15)%>%pull(external_gene_name)
+Candgenes_top<-unique(c(axgenes_top,actgenes_top,cagenes_top))
+```
+Klf9/13 6/7 development PCA
+```{r}
+rlg<-rlog(dds,blind = FALSE)
+tst<-plotPCA(rlg,intgroup=c("Target","Age"),ntop=500)+theme_bw()+labs(color= "Group")+
+  scale_color_manual(values=c("lightgreen","forestgreen","firebrick2","lightblue2","blue4"),name="gRNA Target",
+                     labels=c("Klf6/7 P10","Klf6/7 P20","Klf9/13","Scramble P10","Scramble P20"))+
+  theme(axis.title =element_text(size=14),legend.position = "right")+
+  geom_point(color="black",pch=21,size=4)+geom_point(aes(fill=group),size=3.5,show.legend = F)
+```
+
+Klf6/7 Development plot
+```{r}
+library(ggpubr)
+P10P20<-lfcShrink(dds, contrast = c("Group","ScrGFP_P20","ScrGFP_P10"),type="ashr")
+
+P10P20df<-as.data.frame(P10P20)%>%rownames_to_column("ENSID")%>%
+  left_join(bmart1,by = c("ENSID"="ensembl_gene_id"))%>%
+  filter(chromosome_name%in%c(as.character(1:19),"X","Y"),gene_biotype%in%c("protein_coding"))
+
+Dev67<-K67df_10[,c(1,3,5,6,7)]%>%inner_join(Devdf[,c(1,3,6)],by=c("external_gene_name"="ENSID"),suffix=c("_KLF","_Dev"))%>%
+  mutate(DEG=ifelse(ENSID%in%K67df10_filt$ENSID,"Klf6/7 Target","Not Target"))%>%dplyr::filter(!external_gene_name%in%c("Klf6","Klf7","Tmem150b"))
+
+out<-ggplot(Dev67,aes(x=log2FoldChange_Dev,y=log2FoldChange_KLF))+geom_point(aes(col=DEG,alpha=DEG)) + scale_color_manual(values = c("Not Target" = "black", "Klf6/7 Target" = "forestgreen")) + 
+  labs(x="log2FoldChange(P2 v P30)",y="log2FoldChange(Klf6/7 v Scramble, P10)",col="")+geom_vline(xintercept = 0,linetype="dashed")+geom_hline(yintercept = 1,linetype="dashed")+
+  geom_hline(yintercept = -1,linetype="dashed") + theme_bw() + geom_smooth(method=lm,se = T,col="grey40")+stat_cor(aes(label=..r.label..),label.x=2.5,label.y=3.5,size=5)+
+  stat_smooth(data=subset(Dev67,DEG=="Klf6/7 Target"),col = "forestgreen",method=lm,fullrange = T) + 
+  stat_cor(data=subset(Dev67,DEG=="Klf6/7 Target"),col="forestgreen",label.x=2.5,label.y=3,size=5)+
+  theme(axis.title =element_text(size=16),axis.text =element_text(size=13))+
+  scale_alpha_manual(values=c(1,0.4))
+```
+
+
+```{r}
+DEGset<-K67df10_filt%>%filter(log2FoldChange<=-1)
+klfensnames<-c("Klf6","Klf7")
+
+countmat_filt<-DevTPM%>%filter(external_gene_name%in%c(DEGset$external_gene_name,"Klf6","Klf7"))
+scale_counts_filt<-apply(countmat_filt[,-13],1,FUN=function(x) (x-mean(x))/sd(x))
+mat<-as.data.frame(t(scale_counts_filt))%>%rownames_to_column("ENSID")%>%pivot_longer(-ENSID,names_to = "Sample")%>%
+  mutate(Age=str_extract(Sample,pattern="p[0-9]+"))%>%mutate(Age=str_replace(Age,pattern="p",replacement="P"))%>%
+  mutate(Age=fct_relevel(Age,"P2","P7","P30"))%>%group_by(ENSID,Age)%>%summarize(avgexp=mean(value))%>%
+  group_by(Age)
+ploty<-mat%>%ggplot(aes(x=Age,y=avgexp))+geom_line(aes(group=ENSID),alpha=0.1)+  stat_summary(fun=mean, group=1, geom="line", colour="blue",linewidth=1)+stat_summary(fun=mean,fun.min=function(x) mean(x)-sd(x),fun.max=function(x) mean(x)+sd(x),geom="errorbar", colour="blue",width=0.2,linewidth=1)+labs(x="Age", y="Normalzied Expresion")+theme_bw()+theme(axis.title =element_text(size=17),axis.text =element_text(size=15))
+ploty+geom_line(data=subset(mat,ENSID%in%klfensnames),aes(x=Age,y=avgexp,col=ENSID,group=ENSID),linewidth=1.2,linetype="dashed")+scale_color_manual(name="Gene",values=c("chartreuse3","chartreuse4"),labels=c("Klf6","Klf7"))+theme(legend.position = "bottom")
+```
+Heatmap of Klf67/913 union
+```{r}
+KLF913<-lfcShrink(dds, contrast = c("Group","Klf913_P20","ScrGFP_P20"),type="ashr")
+
+K913df<-as.data.frame(KLF913)%>%rownames_to_column("ENSID")%>%
+  left_join(bmart1,by = c("ENSID"="ensembl_gene_id"))%>%
+  filter(chromosome_name%in%c(as.character(1:19),"X","Y"),gene_biotype%in%c("protein_coding"))
+K913df_filt<-K913df%>%filter(abs(log2FoldChange)>=lfc,padj<=pval)
+
+#intergene<-K67df10_filt%>%filter(external_gene_name%in%intersect(K67df10_filt$external_gene_name,K913df_filt$external_gene_name))
+K913df_filt2<-K913df%>%filter(padj<=pval,abs(log2FoldChange)>=log2(1.5))
+K67df10_filt2<-K67df_10%>%filter(padj<=pval,abs(log2FoldChange)>=log2(1.5))
+intergene<-K913df%>%filter((ENSID%in%K67df10_filt$ENSID&ENSID%in%K913df_filt2$ENSID)|(ENSID%in%K913df_filt$ENSID&ENSID%in%K67df10_filt2$ENSID))
+
+countmat_rlg2<-countmat_rlg[,c(13:16,1:4,17:20,9:12,21)]
+DEGset<-intergene
+Candgenes<-c(intersect(DEGset$external_gene_name,axongenes),
+                grep(DEGset$external_gene_name,pattern=IonChannels,value=TRUE))
+
+y<-heatmapplus2(countmat_rlg2,target=c("Klf9/13","Klf6/7"),DEGset = intergene,row_names_gp = gpar(fontsize= 10),remix=FALSE,column_split=rep(c("A","B"),each=8),column_gap=unit(1.5,"mm"),returnraw = TRUE)
+draw(y,heatmap_legend_side = "bottom")
+```
+
+
+```{r}
+K913df_filt2<-K913df%>%filter(padj<=pval)
+K67df10_filt2<-K67df_10%>%filter(padj<=pval)
+K913_67<-K913df[,c(1,3,6,7)]%>%inner_join(K67df_10[,c(1,3,6,7)],by="ENSID",suffix=c("_Klf913","_Klf67"))%>%mutate(DEG=case_when((ENSID%in%K913df_filt2$ENSID&ENSID%in%K67df10_filt2$ENSID) ~ "Shared Target", ENSID%in%K913df_filt2$ENSID ~ "Klf9/13 Target",ENSID%in%K67df10_filt2$ENSID ~ "Klf6/7 Target", .default = "Not Target"))%>%mutate(Shared=ifelse(DEG=="Shared Target",T,F))%>%dplyr::filter(!external_gene_name_Klf913%in%c("Klf6","Klf7","Klf13","Klf9"))
+big<-ggplot(K913_67,aes(x=log2FoldChange_Klf67,y=log2FoldChange_Klf913))+geom_point(aes(col=DEG,alpha=Shared)) + scale_color_manual(values = c("Not Target" = "grey", "Klf9/13 Target" = "firebrick2", "Klf6/7 Target" = "forestgreen", "Shared Target" = "purple"))  + labs(x="log2FoldChange(Klf6/7 v Scramble, P10)",y="log2FoldChange(Klf9/13 v Scramble, P20)",col="")+ geom_vline(xintercept = 0,linetype="dashed")+geom_hline(yintercept = 0,linetype="dashed") + theme_bw()+scale_alpha_manual(values=c(0.4,1))
+out<-big+theme(axis.title = element_text(size=12))+stat_smooth(data=subset(K913_67,DEG=="Shared Target"),col="purple",method=lm,fullrange = T)+stat_cor(data=subset(K913_67,DEG=="Shared Target"),col="purple",label.y=4,label.x=1,size=5)+
+  scale_y_continuous(limit=c(-6,6))+
+  scale_x_continuous(limit=c(-6,6))+
+  theme(axis.title =element_text(size=14),axis.text =element_text(size=13))
+```
+
+Gene Ontology for Shared targets
+```{r}
+#Attempt 1: Enrichment (only 1 category)
+GOdown<- enrichGO(gene = intergene$ENSID, universe = geneuniv,
+                OrgDb = org.Mm.eg.db,
+                ont = "ALL",minGSSize = 25,
+                pAdjustMethod = "BH",keyType = "ENSEMBL",
+                pvalueCutoff  = 0.05,qvalueCutoff = 0.1,
+                readable = TRUE)
+
+#Attempt 2: GSEA (sorted by ABSOLUTE PC2)
+indx<-order(apply(as.data.frame(assay(rlg)),1,var),decreasing = T)
+pcx<-prcomp(t(assay(rlg)[indx,]))
+pcgenes<-pcx$rotation
+topgenes<-as.data.frame(pcgenes)%>%rownames_to_column("ENSID")%>%arrange(desc(PC2))%>%dplyr::select(ENSID)
+
+gsea_genes<-pcgenes[,2]
+gsea_genes<-gsea_genes[!is.na(gsea_genes)]
+
+set.seed(101)
+GSEAres<- gseGO(geneList = sort(abs(gsea_genes),decreasing = TRUE),
+                OrgDb = org.Mm.eg.db,
+                ont="ALL",minGSSize = 30,
+                pAdjustMethod = "BH",
+                keyType = "ENSEMBL",
+                pvalueCutoff = 0.05,
+                scoreType="pos",eps = 0,
+                nPermSimple=10000)
+
+ridgeplot(simplify(GSEAres,cutoff=0.3))
+
+```
+
+Bar graphs of selected targets
+```{r}
+quickplotKLF<-function(TPMmatrix,genes=NA){
+  TPMmatrix%>%filter(external_gene_name%in%genes)%>%
+    dplyr::select(contains("Scr"),contains("Klf"),"external_gene_name")%>%
+    pivot_longer(cols = -external_gene_name)%>%mutate(virus=str_remove(name,"_(10)?[A-Z][0-9]?$"),age=ifelse(grepl(.$name,pattern = "10"),"P10","P20"))%>%
+    mutate(group=paste(virus,age,sep = " "))%>%
+    group_by(external_gene_name,group)%>%
+    mutate(mean=mean(value),std=sd(value),
+           group=factor(group,levels = c("Klf67 P10","ScrGFP P10","Klf67 P20","ScrGFP P20","Klf913 P20")))%>%
+    ggplot(aes(x=external_gene_name,y=mean,fill=group))+
+    geom_bar(stat="summary",position="dodge",color="black")+
+    geom_errorbar(aes(ymin=mean-std,ymax=mean+std),position=position_dodge(.9),width=0.2)+
+    geom_point(aes(y=value),position=position_dodge(width=0.9),show.legend = F)+theme_classic()+
+    scale_y_continuous(expand=c(0,NA))+
+    labs(x="Gene",y="Normalized expression (TPM)",fill="Target")+scale_fill_manual(values=c("lightgreen","lightblue2","forestgreen","blue4","firebrick2"))+
+    theme(legend.position = "right",axis.title =element_text(size=15),axis.text.x =element_text(size=15,vjust = 0.6))
+}
+
+TPMmatrix<-read.csv("~/Documents/Counts/KLF_GFP_TPM.csv",row.names = 1)
+```
+
+```{r}
+DEGset<-K67df10_filt%>%filter(log2FoldChange<=1)
+countmat_filt<-countmat_rlg%>%filter(GeneID%in%DEGset$external_gene_name)
+scale_counts_filt<-apply(countmat_filt[,-c(1:6,16)],1,FUN=function(x) (x-mean(x))/sd(x))
+mat<-as.data.frame(t(scale_counts_filt))%>%rownames_to_column("ENSID")%>%pivot_longer(-ENSID,names_to = "Sample")%>%
+  mutate(Celltype=str_remove(Sample," [A-Z]$"))%>%group_by(ENSID,Celltype)%>%summarize(avgexp=mean(value))%>%
+  mutate(Celltype=factor(Celltype,levels = c("Scramble P10","Klf9/13 P20","Klf6/7 P10","Scramble P20","Klf6/7 P20")))%>%
+  group_by(Celltype)
+plotx<-mat%>%ggplot(aes(x=Celltype,y=avgexp))+geom_line(aes(group=ENSID),alpha=0.1)+  stat_summary(fun=mean, group=1, geom="line", colour="blue",size=1)+stat_summary(fun=mean,fun.min=function(x) mean(x)-sd(x),fun.max=function(x) mean(x)+sd(x),geom="errorbar", colour="blue",width=0.2,size=1)+labs(x="gRNA Target", y="Normalzied Expresion")+theme_bw()+theme(axis.title =element_text(size=17),axis.text =element_text(size=15))
+
+DEGset<-K913df_filt%>%filter(log2FoldChange>=1)
+countmat_filt<-countmat_rlg%>%filter(GeneID%in%DEGset$external_gene_name)
+scale_counts_filt<-apply(countmat_filt[,-c(7:9,16)],1,FUN=function(x) (x-mean(x))/sd(x))
+mat<-as.data.frame(t(scale_counts_filt))%>%rownames_to_column("ENSID")%>%pivot_longer(-ENSID,names_to = "Sample")%>%
+  mutate(Celltype=str_remove(Sample," [A-Z]$"))%>%group_by(ENSID,Celltype)%>%summarize(avgexp=mean(value))%>%
+  mutate(Celltype=factor(Celltype,levels = c("Scramble P10","Klf9/13 P20","Klf6/7 P10","Scramble P20","Klf6/7 P20")))%>%
+  group_by(Celltype)
+plotx<-mat%>%ggplot(aes(x=Celltype,y=avgexp))+geom_line(aes(group=ENSID),alpha=0.1)+  stat_summary(fun=mean, group=1, geom="line", colour="blue",size=1)+stat_summary(fun=mean,fun.min=function(x) mean(x)-sd(x),fun.max=function(x) mean(x)+sd(x),geom="errorbar", colour="blue",width=0.2,size=1)+labs(x="gRNA Target", y="Normalzied Expresion")+theme_bw()+theme(axis.title =element_text(size=17),axis.text =element_text(size=15))
+```
+
+Klf67 Age qPCR (w P5)
+
+```{r}
+chk<-fread("~/Documents/qPCR/Klf67913_Age/K67Ageqpcr.csv")
+KLF<-chk%>%dplyr::select(SampID,FC_K6_P5,FC_K7_P5,Virus,Age)%>%
+  pivot_longer(cols=c(FC_K6_P5,FC_K7_P5),names_to = "Target",values_to = "FC")%>%
+  mutate(Target=ifelse(Target=="FC_K6_P5","Klf6","Klf7"))%>%arrange(Target,desc(Virus),desc(Age))%>%
+  group_by(Virus,Age,Target)%>%mutate(fcmean=mean(FC))
+n<-length(unique(KLF$SampID))
+KLF$controlmean<-c(rep(KLF$fcmean[1],n),rep(KLF$fcmean[n+1],n))
+KLF<-KLF%>%mutate(fcnorm=FC/controlmean)%>%mutate(normmean=mean(fcnorm),fcsd=sd(fcnorm))%>%mutate(Group=paste(Virus, Age, sep=" "))%>%
+  mutate(Group=factor(Group,levels = c("Scr-GFP P5","Klf67-GFP P5","Scr-GFP P10-12","Klf67-GFP P10-12","Scr-GFP P18-20","Klf67-GFP P18-20")))
+y<-ggplot(KLF,aes(x=Target,y=normmean,fill=Group))+geom_bar(stat="summary",position="dodge",color="black")+
+  geom_point(aes(x=Target,y=FC),position = position_dodge(width=0.9),show.legend = F)+
+  geom_errorbar(aes(ymin=normmean-fcsd,ymax=normmean+fcsd,x=Target),position = position_dodge(width=0.9),width=0.2)+
+  scale_y_continuous(expand=c(0,0),limit=c(0,1.75))+theme_classic()+scale_fill_brewer(palette = "Paired")+
+  labs(x="Measured Gene",y="Relative mRNA Levels",fill="gRNA Target")+theme(legend.position = "right",text=element_text(size=16))+
+  geom_hline(yintercept = 1,linetype="dashed")+theme(text=element_text(size=18),legend.position = "right",legend.text = element_text(size=12))
+
+```
+Nonsense Reviewer 1 plots
+```{r}
+Dev913<-K913df_old[,c(1,3,5,6,7)]%>%inner_join(Devdf[,c(1,3,6)],by=c("external_gene_name"="ENSID"),suffix=c("_KLF","_Dev"))%>%
+  mutate(DEG=case_when(ENSID%in%K913df_filtold$ENSID,"Klf9/13 Target","Not Target"))%>%dplyr::filter(!external_gene_name%in%c("Klf9","Klf13"))
+
+out<-ggplot(Dev913,aes(x=log2FoldChange_Dev,y=log2FoldChange_KLF))+geom_point(aes(col=DEG,alpha=DEG)) + scale_color_manual(values = c("Not Target" = "black", "Klf9/13 Target" = "firebrick2")) + geom_point(data=subset(Dev913,ENSID%in%K67df10_filt$ENSID),color="forestgreen")+
+  labs(x="log2FoldChange(P2 v P30)",y="log2FoldChange(Klf9/13 v Scramble)",col="")+geom_vline(xintercept = 0,linetype="dashed")+geom_hline(yintercept = 1,linetype="dashed")+
+  geom_hline(yintercept = -1,linetype="dashed") + theme_bw()+
+  stat_smooth(data=subset(Dev913,DEG=="Klf9/13 Target"),col = "firebrick2",method=lm,fullrange = T) + stat_smooth(data=subset(Dev913,ENSID%in%K67df10_filt$ENSID),color="forestgreen",method=lm,fullrange=T)+stat_cor(data=subset(Dev913,ENSID%in%K67df10_filt$ENSID),col="forestgreen",label.x=4,label.y=3,size=5,p.accuracy = 0.0000001)+
+  stat_cor(data=subset(Dev913,DEG=="Klf9/13 Target"),col="firebrick2",label.x=4,label.y=3.5,size=5)+scale_alpha_manual(values=c(1,0.4))+
+  theme(axis.title =element_text(size=16),axis.text =element_text(size=13))+ geom_text_repel(data=subset(Dev913,external_gene_name%in%intersect(KLFbestgenes,intergene$external_gene_name)),                                                                                        aes(x=log2FoldChange_Dev,y=log2FoldChange_KLF,label=external_gene_name),color="grey20",max.overlaps = 25,force=10,fontface="italic")
+
+Dev67<-K67df_10[,c(1,3,5,6,7)]%>%inner_join(Devdf[,c(1,3,6)],by=c("external_gene_name"="ENSID"),suffix=c("_KLF","_Dev"))%>%
+  mutate(DEG=ifelse(ENSID%in%K67df10_filt$ENSID,"Klf6/7 Target","Not Target"))%>%dplyr::filter(!external_gene_name%in%c("Klf6","Klf7","Tmem150b"))
+
+out<-ggplot(Dev67,aes(x=log2FoldChange_Dev,y=log2FoldChange_KLF))+geom_point(aes(col=DEG,alpha=DEG)) + scale_color_manual(values = c("Not Target" = "black", "Klf6/7 Target" = "forestgreen")) + geom_point(data=subset(Dev67,ENSID%in%K913df_filt$ENSID),color="firebrick2")+ 
+  labs(x="log2FoldChange(P2 v P30)",y="log2FoldChange(Klf6/7 v Scramble, P10)",col="")+geom_vline(xintercept = 0,linetype="dashed")+geom_hline(yintercept = 1,linetype="dashed")+
+  geom_hline(yintercept = -1,linetype="dashed") + theme_bw() +stat_smooth(data=subset(Dev67,ENSID%in%K913df_filt$ENSID),color="firebrick2",method=lm,fullrange=T)+stat_cor(data=subset(Dev67,ENSID%in%K913df_filt$ENSID),col="firebrick2",label.x=-10,label.y=2,size=5,p.accuracy = 0.0000001)+
+  stat_smooth(data=subset(Dev67,DEG=="Klf6/7 Target"),col = "forestgreen",method=lm,fullrange = T) + 
+  stat_cor(data=subset(Dev67,DEG=="Klf6/7 Target"),col="forestgreen",label.x=-10,label.y=2.5,size=5)+
+  theme(axis.title =element_text(size=16),axis.text =element_text(size=13))+
+  scale_alpha_manual(values=c(1,0.4))+geom_text_repel(data=subset(Dev67,external_gene_name%in%intersect(KLFbestgenes,intergene$external_gene_name)),                                                                                        aes(x=log2FoldChange_Dev,y=log2FoldChange_KLF,label=external_gene_name),color="grey20",max.overlaps = 25,force=10,fontface="italic")
