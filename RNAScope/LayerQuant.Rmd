@@ -1,0 +1,119 @@
+---
+title: "R Notebook"
+output: html_noteb
+---
+
+
+
+```{r}
+library(data.table)
+rnadir<-"/Volumes/RWK_Imaging/p2p30/Good/table/"
+rnatabs<-list.files(rnadir,pattern = "_punctacounts",full.names = T)
+
+listx<-list()
+for(i in rnatabs){
+  temp<-fread(i)
+  if(grepl(i,pattern="052824_P2C_K7K9_LH40x|050824_P2C_K9K7_RH40x")){
+    temp<-temp[-c(1:250),]
+  }
+  if(grepl(i,pattern="P2[A-Z]+_")){
+    nset=2000} else{
+    nset=2000}
+  temp<-temp%>%mutate(new_bin = ntile(V1, n=nset))%>%
+    group_by(new_bin)%>%
+    summarise(nNuc=sum(nNuc),nRNA1=sum(nRNA1),nRNA2=sum(nRNA2))%>%mutate(file=i)
+  listx[[i]]<-temp
+}
+
+rnadf<-do.call(rbind,listx)
+
+animalid=str_split(rnadf$file,pattern = "_",simplify = T)[,3]
+rnadf_fix<-rnadf%>%mutate(animalID=animalid,Age=str_extract(file,pattern="P[0-9]+"),date=str_extract(file,pattern="[0-9]{6}"))
+
+rnadf_fix<-rnadf_fix%>%filter(Age%in%c("P2","P7","P30"))
+```
+
+```{r}
+xout<-rnadf_fix%>%pivot_longer(cols=starts_with("nRNA"),names_to="Gene",values_to="Counts")%>%
+  mutate(Gene=ifelse(Gene=="nRNA1","Klf9","Klf7"))%>%
+  mutate(NormCounts=Counts/nNuc)%>%group_by(new_bin,Gene,Age)%>%
+  ggplot(aes(col=Gene))+geom_smooth(aes(x=new_bin,y=NormCounts),span=0.5)+
+  facet_wrap(~Age,scales = "free_y")+coord_flip()+
+  theme_classic()+labs(y="Normalized Puncta Counts",x="D-V Axis")+
+  scale_color_manual(values=c("green3","firebrick2"))+
+  theme(text=element_text(size=15))+
+  scale_x_reverse()
+```
+
+```{r}
+mean.function <- function(x, index) {
+  d <- x[index]  
+  return(mean(d))  
+}
+
+bootstrapit<-function(inmat,Rset=1000){
+  temp<-pivot_wider(inmat[,c(1,3,9)],names_from = file,values_from=NormCounts)%>%column_to_rownames('new_bin')
+  bstest<-apply(temp,1,function(x) boot(x,statistic=mean.function,R=Rset))
+  bsint<-sapply(bstest,confint)
+  outdf<-as.data.frame(t(bsint))%>%mutate(Age=inmat$Age[1],Gene=inmat$Gene[1],bin=seq(length(bstest)))
+  return(outdf)
+}
+xout<-rnadf_fix%>%pivot_longer(cols=starts_with("nRNA"),names_to="Gene",values_to="Counts")%>%
+  filter(str_detect(file,"052824_P2C",negate=TRUE))%>%
+  mutate(Gene=ifelse(Gene=="nRNA1","Klf9","Klf7"))%>%
+  mutate(Age=factor(Age,levels=c("P2","P7","P30")))%>%
+  mutate(NormCounts=Counts/nNuc)
+
+pdf<-matrix(NA,nrow=2000,ncol=3)
+colnames(pdf)<-c("P2","P7","P30")
+datin<-xout%>%filter(Age=="P2")
+for(i in seq(unique(datin$new_bin))){
+  temp<-datin%>%filter(new_bin==i)%>%rstatix::wilcox_test(NormCounts ~ Gene)
+  pdf[i,1]<-temp$p}
+datin<-xout%>%filter(Age=="P7")
+for(i in seq(unique(datin$new_bin))){
+  temp<-datin%>%filter(new_bin==i)%>%rstatix::wilcox_test(NormCounts ~ Gene)
+  pdf[i,2]<-temp$p}
+datin<-xout%>%filter(Age=="P30")
+for(i in seq(unique(datin$new_bin))){
+  temp<-datin%>%filter(new_bin==i)%>%rstatix::wilcox_test(NormCounts ~ Gene)
+  pdf[i,3]<-temp$p}
+
+xsplit<-xout%>%mutate(new_bin=as.numeric(new_bin),group=paste0(Age,Gene))%>%split(.,.$group)
+test<-lapply(xsplit,function(x) bootstrapit(x))
+
+outboot<-do.call(rbind,test)  
+
+sdplot<-xout%>%group_by(new_bin,Age,Gene)%>%summarise(normmean=mean(NormCounts),normsd=sd(NormCounts))%>%
+  ggplot(aes(x=new_bin,y=normmean,col=Gene))+geom_line()+
+  geom_ribbon(aes(ymin=normmean-normsd,ymax=normmean+normsd,fill=Gene),color=NA,alpha=0.5)+
+  facet_wrap(~Age)+coord_flip()+
+  theme_classic()+labs(y="Normalized Puncta Counts",x="Scaled D-V Axis")+
+  scale_color_manual(values=c("green3","firebrick2"))+
+  scale_fill_manual(values=c("green3","firebrick2"))+
+  theme(text=element_text(size=15))+
+  scale_x_reverse()
+
+bsplot<-xout%>%group_by(new_bin,Age,Gene)%>%summarise(normmean=mean(NormCounts))%>%
+  left_join(outboot,by=c("Age"="Age","Gene"="Gene","new_bin"="bin"))%>%
+  mutate(Age=factor(Age,levels=c("P2","P7","P30")))%>%
+  ggplot(aes(x=new_bin,y=normmean,col=Gene))+geom_line()+
+  geom_ribbon(aes(ymin=V1,ymax=V2,fill=Gene),color=NA,alpha=0.5)+
+  facet_wrap(~Age)+coord_flip()+
+  theme_minimal()+labs(y="Normalized Puncta Counts",x="Scaled D-V Axis")+
+  scale_color_manual(values=c("green3","firebrick2"))+
+  scale_fill_manual(values=c("green3","firebrick2"))+
+  theme(text=element_text(size=15))+
+  scale_x_reverse()
+```
+
+```{r}
+xout<-rnadf_fix%>%pivot_longer(cols=starts_with("nRNA"),names_to="Gene",values_to="Counts")%>%
+  mutate(Gene=ifelse(Gene=="nRNA1","Klf9","Klf7"))%>%filter(animalID=="P2C")%>%
+  mutate(NormCounts=Counts/nNuc)%>%group_by(new_bin,Age,Gene)%>%
+  mutate(normmean=mean(NormCounts),normsd=sd(NormCounts))%>%
+  ggplot(aes(x=new_bin,y=NormCounts,linetype=Gene,col=file))+geom_line(linewidth=0.1)+
+  theme_classic()+
+  theme(text=element_text(size=15))+theme(legend.position = "none")
+```
+

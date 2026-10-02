@@ -1,0 +1,182 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+
+
+
+
+```{r}
+library(tidyverse)
+library(data.table)
+
+#Working_Directory/table
+rnadir<-"/Volumes/Suinan_Port/RKTransfer/RNAScope/P20_plus/Test Folder for Segmentation/table/"
+rnatabs<-list.files(rnadir,pattern = "_intersections",full.names = TRUE)
+#Working_Directory/cell/origSize/
+celldir<-"/Volumes/Suinan_Port/RKTransfer/RNAScope/P20_plus/Test Folder for Segmentation/cell/origSize//"
+celltabs<-list.files(celldir,pattern = "_cellprops",full.names = TRUE)
+```
+
+```{r}
+r1files<-subset(rnatabs,grepl(rnatabs,pattern="rna1"))
+listx<-list()
+for(i in r1files){
+  temp<-fread(i,drop=1)
+  temp$file<-i
+  listx[[i]]<-temp
+}
+
+r2files<-subset(rnatabs,grepl(rnatabs,pattern="rna2"))
+listy<-list()
+for(i in r2files){
+  temp<-fread(i,drop=1)
+  temp$file<-i
+  listy[[i]]<-temp
+}
+
+rna1df<-do.call(rbind,listx)
+rna2df<-do.call(rbind,listy)
+
+listz<-list()
+for(i in celltabs){
+  temp<-fread(i,drop=1)
+  temp$file<-i
+  listz[[i]]<-temp
+}
+
+celldf<-do.call(rbind,listz)
+```
+
+
+Better method for merging and plotting
+```{r}
+min_size<-20
+min_fract<-0.75
+
+rna1_filt<-rna1df%>%filter(nPix>min_size,inCfrac>min_fract)%>%mutate(file=str_remove(basename(file),pattern="_intersections.csv"))%>%
+  mutate(file=str_remove(file,pattern="rna[0-9]+_"))%>%
+  group_by(file,cellID)%>%summarise(punctacount=n())
+
+rna2_filt<-rna2df%>%filter(nPix>min_size,inCfrac>min_fract)%>%mutate(file=str_remove(basename(file),pattern="_intersections.csv"))%>%
+  mutate(file=str_remove(file,pattern="rna[0-9]+_"))%>%
+  group_by(file,cellID)%>%summarise(punctacount=n())
+
+allrna_filt<-full_join(rna1_filt,rna2_filt,join_by(file,cellID),suffix=c("_rna1","_rna2"))%>%
+  mutate_all(~replace(.,is.na(.),0))
+
+celldf_fixed<-celldf%>%mutate(file=str_remove(basename(file),pattern="_cellprops.csv"))%>%mutate(file=str_remove(file,pattern="C1_"))%>%select(-starts_with("centroid"))
+
+allrna_merge<-left_join(allrna_filt,celldf_fixed,join_by(file,cellID == label))
+cellsplit<-str_split(allrna_merge$file,pattern = "_",simplify = T)
+
+allrna_merge<-allrna_merge%>%mutate(date=str_extract(file,pattern="[0-9]{6}"),virus=ifelse(grepl(file,pattern="scr",ignore.case=T),"ScrGFP","Klf9/13"))
+allrna_merge$sample<-cellsplit[,3]
+allrna_merge<-allrna_merge%>%mutate(Target1="Klf9",Target2=ifelse(grepl(file,pattern="T2b"),"Tubb2b","Dpysl3"),animalID=paste(virus,str_extract(sample,"[A-E]"),sep = "_"))
+
+finalcelldf<-pivot_longer(allrna_merge,cols=c(punctacount_rna1,punctacount_rna2),names_to = "Target",values_to = "Counts")%>%
+  mutate(Target=case_when(str_detect(Target,"rna1") ~ Target1, str_detect(Target,"rna2") ~ Target2))%>%
+  filter(!(date=="022224"&animalID=="Klf9/13_D"&Target=="Klf9"))%>%filter(!(date=="022624"&animalID=="ScrGFP_A"&Target=="Tubb2b"))%>%
+  filter(!(date=="112023"&animalID=="ScrGFP_B"&sample=="B2"))%>%filter(!(date=="040924"&Target=="Dpysl3"))
+
+
+```
+
+```{r}
+#cell intensity :: puncta count comparison
+finalcelldf%>%mutate(group=paste(date,animalID,sep="_"))%>%filter(virus=="Klf9/13")%>%
+  ggplot(aes(x=intensity_mean,y=Counts/area))+geom_point(aes(col=Target),alpha=0.5)+facet_wrap(~group)+
+  scale_color_brewer(palette = "Set1")+theme_classic()+labs(y="RNA Puncta Counts/Area",x="Average GFP Intensity",col="Probe")+
+  theme(legend.position = "bottom",text = element_text(size=15))
+```
+
+```{r}
+#Violin plot (scaled by area)
+
+violinplot<-finalcelldf%>%
+  mutate(virus=factor(virus,levels=c("ScrGFP","Klf9/13")))%>%mutate(Target=factor(Target,levels=c("Klf9","Dpysl3","Tubb2b")))%>%
+  ggplot(aes(x=Target,y=Counts/area,fill=virus))+geom_violin(draw_quantiles = c(0.25,0.5,0.75),scale="width")+
+  scale_fill_manual(values = c("blue4","firebrick3"))+theme_classic()+labs(y="RNA Puncta/Area",fill="Virus")+
+  theme(legend.position = "bottom",text = element_text(size=15))
+
+#animal Avg plot
+animalavg<-finalcelldf%>%mutate(Target=factor(Target,levels=c("Klf9","Dpysl3","Tubb2b")))%>%
+  mutate(virus=factor(virus,levels=c("ScrGFP","Klf9/13")))%>%group_by(virus,Target,animalID)%>%
+  summarise(mean=mean(Counts))%>%group_by(virus,Target)%>%
+  mutate(groupmean=mean(mean),groupsem=sd(mean)/2)%>%mutate(sampn=str_extract(animalID,"[A-E]$"))%>%
+  ggplot(aes(x=Target,y=groupmean,col=virus))+geom_point(position=position_dodge(width=0.5),size=2)+
+    geom_point(aes(y=mean,shape=sampn,group=interaction(Target,virus)),
+               position=position_jitterdodge(dodge.width=0.5,jitter.width = 0.25),show.legend = F)+
+  geom_errorbar(aes(ymin=groupmean-groupsem,ymax=groupmean+groupsem),position=position_dodge(width=0.5),width=0.3,size=1)+
+  scale_color_manual(values = c("blue4","firebrick3"))+theme_classic()+labs(y="Average RNA Puncta",col="Virus")+
+  theme(legend.position = "bottom",text = element_text(size=15))
+
+```
+
+```{r}
+library(tidyverse)
+library(data.table)
+
+#Working_Directory/table
+rnadir<-"/Volumes/Suinan_Port/RKTransfer/RNAScope/P10/KLF67_P10_new/table/"
+rnatabs<-list.files(rnadir,pattern = "_intersections",full.names = TRUE)
+#Working_Directory/cell/origSize/
+celldir<-"/Volumes/Suinan_Port/RKTransfer/RNAScope/P10/KLF67_P10_new/cell/origSize/"
+celltabs<-list.files(celldir,pattern = "_cellprops",full.names = TRUE)
+```
+
+```{r}
+r1files<-subset(rnatabs,grepl(rnatabs,pattern="rna1"))
+listx<-list()
+for(i in r1files){
+  temp<-fread(i,drop=1)
+  temp$file<-i
+  listx[[i]]<-temp
+}
+
+rna1df<-do.call(rbind,listx)
+
+listz<-list()
+for(i in celltabs){
+  temp<-fread(i,drop=1)
+  temp$file<-i
+  listz[[i]]<-temp
+}
+
+celldf<-do.call(rbind,listz)
+```
+
+```{r}
+min_size<-20
+min_fract<-0.75
+
+rna1_filt<-rna1df%>%filter(nPix>min_size,inCfrac>min_fract)%>%mutate(file=str_remove(basename(file),pattern="_intersections.csv"))%>%
+  mutate(file=str_remove(file,pattern="rna[0-9]+_"))%>%
+  group_by(file,cellID)%>%summarise(punctacount=n())
+
+celldf_fixed<-celldf%>%mutate(file=str_remove(basename(file),pattern="_cellprops.csv"))%>%mutate(file=str_remove(file,pattern="C1_"))%>%select(-starts_with("centroid"))
+
+allrna_merge<-left_join(rna1_filt,celldf_fixed,join_by(file,cellID == label))
+cellsplit<-str_split(allrna_merge$file,pattern = "_",simplify = T)
+
+allrna_merge<-allrna_merge%>%mutate(date=str_extract(file,pattern="[0-9]{6}"),virus=ifelse(grepl(file,pattern="scr",ignore.case=T),"ScrGFP","Klf6/7"))
+allrna_merge$sample<-cellsplit[,3]
+finalcelldf<-allrna_merge%>%mutate(Target=ifelse(grepl(file,pattern="T2b"),"Tubb2b","Dpysl3"),animalID=paste(virus,str_extract(sample,"[A-E]"),sep = "_"))
+```
+
+```{r}
+violinplot<-finalcelldf%>%mutate(virus=factor(virus,levels=c("ScrGFP","Klf6/7")))%>%ggplot(aes(x=Target,y=punctacount/area,fill=virus))+
+  geom_violin(draw_quantiles = c(0.25,0.5,0.75),scale="width")+
+  scale_fill_manual(values = c("lightblue3","springgreen3"))+theme_classic()+labs(y="RNA Puncta/Area",fill="Virus")+
+  theme(legend.position = "bottom",text = element_text(size=15))
+
+animalavg<-finalcelldf%>%mutate(virus=factor(virus,levels=c("ScrGFP","Klf6/7")))%>%group_by(virus,Target,animalID)%>%
+  summarise(mean=mean(punctacount))%>%group_by(virus,Target)%>%mutate(groupmean=mean(mean),groupsem=sd(mean)/2)%>%mutate(sampn=str_extract(animalID,"[A-E]$"))%>%
+  ggplot(aes(x=Target,y=groupmean,col=virus))+geom_point(position=position_dodge(width=0.5),size=2)+
+      geom_point(aes(y=mean,shape=sampn,group=interaction(Target,virus)),
+               position=position_jitterdodge(dodge.width=0.5,jitter.width = 0.25),show.legend = F)+
+  geom_errorbar(aes(ymin=groupmean-groupsem,ymax=groupmean+groupsem),position=position_dodge(width=0.5),width=0.3,size=1)+
+  scale_color_manual(values = c("lightblue3","springgreen3"))+theme_classic()+labs(y="Average RNA Puncta",col="Virus")+
+  theme(legend.position = "bottom",text = element_text(size=15))
+```
+
